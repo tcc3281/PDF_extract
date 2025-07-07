@@ -14,6 +14,8 @@ import time
 load_dotenv()
 
 
+def check_chunks(chunks: List[str]) -> bool:
+    return all(500 <= len(chunk) <= 3000 for chunk in chunks) and len(chunks) < 1000 and all(chunk.strip() for chunk in chunks)
 
 # Tool: Trích xuất văn bản từ PDF
 @tool
