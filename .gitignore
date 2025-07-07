@@ -1,0 +1,7 @@
+*.pyc
+.idea/inspectionProfiles/profiles_settings.xml
+.idea/inspectionProfiles/Project_Default.xml
+.idea/
+.env
+*.pdf
+*.json
