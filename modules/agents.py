@@ -1,6 +1,7 @@
 from langgraph.graph import StateGraph, START, END
-from modules.tools import search_tool, extract_pdf, chunk_and_embed
+from modules.tools import search_tool, extract_pdf, chunk_and_embed, check_chunks
 from modules.states import AgentState
+from modules.edges import condition_a1, condition_a2, condition_d, condition_v
 from langchain.prompts import ChatPromptTemplate
 from typing import List, Dict, Any
 import json
@@ -109,8 +110,6 @@ def agent_a2_node(state: AgentState) -> AgentState:
         "messages": messages
     }
 
-def check_chunks(chunks: List[str]) -> bool:
-    return all(500 <= len(chunk) <= 3000 for chunk in chunks) and len(chunks) < 1000 and all(chunk.strip() for chunk in chunks)
 
 summarize_prompt = ChatPromptTemplate.from_messages([
     ("system", "Tóm tắt văn bản sau thành tối đa 100 từ, giữ các ý chính: {text}"),
@@ -455,63 +454,4 @@ def agent_aggregate_node(state: AgentState) -> AgentState:
             "messages": state.get("messages", []) + [{"to": "agent_verify", "action": "reverify"}]
         }
 
-# EDGE
-def condition_a1(state: AgentState) -> str:
-    if state.get("error") or not state.get("cleaned_text"):
-        return "error" if state.get("retry_count_a1", 0) >= 3 else "agent_a1"
-    return "agent_a2"
 
-def condition_a2(state: AgentState) -> str:
-    if state.get("error") or not check_chunks(state.get("chunks", [])):
-        return "error" if state.get("retry_count_a2", 0) >= 3 else "agent_a2"
-    return "agent_analyze"
-
-def condition_d(state: AgentState) -> str:
-    if state.get("error") or not state.get("report"):
-        return "agent_verify"
-    return END
-
-def condition_v(state: AgentState) -> str:
-    if state.get("error"):
-        return "error_final" if state.get("retry_count_analyze", 0) >= 3 else "agent_analyze"
-    return "agent_aggregate"
-def build_graph():
-    # Xây dựng StateGraph
-    workflow = StateGraph(AgentState)
-    workflow.add_node("agent_a1", agent_a1_node)
-    workflow.add_node("agent_a2", agent_a2_node)
-    workflow.add_node("agent_analyze", agent_analyze_node)
-    workflow.add_node("agent_verify", agent_verify_node)
-    workflow.add_node("agent_aggregate", agent_aggregate_node)
-    workflow.add_node("error_handler", lambda state: state)
-    workflow.add_node("error_final_handler", lambda state: state)
-
-    # Direct edges
-    workflow.add_edge(START, "agent_a1")
-    workflow.add_edge("error_handler", "agent_aggregate")
-    workflow.add_edge("error_final_handler", "agent_aggregate")
-
-    # Conditional edges
-    workflow.add_conditional_edges("agent_a1", condition_a1, {
-        "agent_a2": "agent_a2",
-        "agent_a1": "agent_a1",
-        "error": "error_handler"
-    })
-    workflow.add_conditional_edges("agent_a2", condition_a2, {
-        "agent_analyze": "agent_analyze",
-        "agent_a2": "agent_a2",
-        "error": "error_handler"
-    })
-    workflow.add_conditional_edges("agent_verify", condition_v, {
-        "agent_aggregate": "agent_aggregate",
-        "agent_analyze": "agent_analyze",
-        "error_final": "error_final_handler"
-    })
-    workflow.add_conditional_edges("agent_aggregate", condition_d, {
-        "agent_verify": "agent_verify",
-        END: END
-    })
-
-    # Biên dịch và chạy
-    graph = workflow.compile()
-    return graph
