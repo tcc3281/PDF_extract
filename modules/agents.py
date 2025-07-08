@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from datetime import datetime
 
 # Cấu hình logging
 logging.basicConfig(
@@ -76,10 +78,14 @@ def chunked_and_embedded_agent(state: AgentState) -> AgentState:
             chunk_overlap = int(msg.get("chunk_overlap", 200))
             logging.info(f"🔄 Agent A2: Điều chỉnh kích thước chunk={chunk_size}, overlap={chunk_overlap}")
     
+    # Tạo file_id từ file_path
+    file_id = Path(state["file_path"]).stem if state.get("file_path") else "unknown"
+    
     result = chunk_and_embed.invoke({
         "text": state["cleaned_text"],
         "chunk_size": chunk_size,
-        "chunk_overlap": chunk_overlap
+        "chunk_overlap": chunk_overlap,
+        "file_id": file_id
     })
 
     if result.get("error"):
@@ -342,8 +348,12 @@ def analyzed_agent(state: AgentState) -> AgentState:
             # Fallback với nhiều summaries hơn
             final_summary = "\n".join(summaries[:10]) + ("..." if len(summaries) > 10 else "")
         
-        # Lưu intermediate results
-        with open("analyze_intermediate.json", "w", encoding='utf-8') as f:
+        # Lưu intermediate results với tên file unique
+        file_id = Path(state["file_path"]).stem if state.get("file_path") else "unknown"
+        intermediate_filename = f"analyze_intermediate_{file_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        intermediate_path = Path("temp_files") / intermediate_filename
+        
+        with open(intermediate_path, "w", encoding='utf-8') as f:
             json.dump({
                 "summaries": summaries, 
                 "entities": entities,

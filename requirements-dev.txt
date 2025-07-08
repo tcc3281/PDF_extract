@@ -1,0 +1,28 @@
+# Development requirements
+# Install with: pip install -r requirements-dev.txt
+
+# Include base requirements
+-r requirements.txt
+
+# Testing
+pytest==8.4.1
+pytest-cov==6.2.1
+pytest-mock==3.14.1
+pytest-asyncio==1.0.0
+
+# Code quality
+black==25.1.0
+flake8==7.3.0
+isort==6.0.1
+mypy==1.16.1
+
+# Documentation
+sphinx==8.2.3
+
+# Development tools
+ipython==9.1.0
+jupyter==1.1.1
+notebook==7.3.2
+
+# Performance monitoring
+memory-profiler==0.61.0 

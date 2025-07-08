@@ -10,12 +10,20 @@ from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
 import time
+from pathlib import Path
+from datetime import datetime
 
 load_dotenv()
 
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
 
 def check_chunks(chunks: List[str]) -> bool:
     return all(500 <= len(chunk) <= 3000 for chunk in chunks) and len(chunks) < 1000 and all(chunk.strip() for chunk in chunks)
+
+def get_timestamp_filename(base_name: str, extension: str) -> str:
+    """Tạo tên file với timestamp"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{timestamp}_{base_name}.{extension}"
 
 # Tool: Trích xuất văn bản từ PDF
 @tool
@@ -44,7 +52,7 @@ def extract_pdf(pdf_path: str) -> Optional[Dict[str, Any]]:
         return {"cleaned_text": None, "error": str(e)}
 
 @tool
-def chunk_and_embed(text: str, chunk_size: int = 2000, chunk_overlap: int = 200) -> Dict[str, Any]:
+def chunk_and_embed(text: str, chunk_size: int = 2000, chunk_overlap: int = 200, file_id: str = None) -> Dict[str, Any]:
     """
     Split text into chunks and create embeddings using OpenAI's API.
     
@@ -52,6 +60,7 @@ def chunk_and_embed(text: str, chunk_size: int = 2000, chunk_overlap: int = 200)
         text (str): Input text to chunk and embed
         chunk_size (int): Size of each chunk (default: 2000)
         chunk_overlap (int): Overlap between chunks (default: 200)
+        file_id (str): Optional file identifier for unique naming
         
     Returns:
         Dict with keys:
@@ -59,6 +68,10 @@ def chunk_and_embed(text: str, chunk_size: int = 2000, chunk_overlap: int = 200)
             - embeddings (List[List[float]]): List of embeddings
             - db (str): Path to saved FAISS index
     """
+    # Tạo tên file unique
+    if file_id is None:
+        file_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
     # Chunk the text
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
@@ -70,7 +83,7 @@ def chunk_and_embed(text: str, chunk_size: int = 2000, chunk_overlap: int = 200)
     
     # Initialize embeddings model
     embeddings_model = OpenAIEmbeddings(
-        model="text-embedding-ada-002",
+        model=EMBEDDING_MODEL,
         openai_api_key=os.getenv("OPENAI_API_KEY")
     )
     
@@ -115,17 +128,22 @@ def chunk_and_embed(text: str, chunk_size: int = 2000, chunk_overlap: int = 200)
         index.train(embeddings_array)
         index.add(embeddings_array)
         
-        faiss_index_path = "faiss_index.index"
-        faiss.write_index(index, faiss_index_path)
+        # Tạo đường dẫn unique cho FAISS index
+        faiss_index_filename = get_timestamp_filename(f"faiss_index_{file_id}", "index")
+        faiss_index_path = Path("indices") / faiss_index_filename
+        faiss.write_index(index, str(faiss_index_path))
         
-        # Save chunks for later use
-        with open("chunks.json", "w", encoding='utf-8') as f:
+        # Save chunks for later use với tên unique
+        chunks_filename = get_timestamp_filename(f"chunks_{file_id}", "json")
+        chunks_path = Path("temp_files") / chunks_filename
+        with open(chunks_path, "w", encoding='utf-8') as f:
             json.dump(chunks, f, ensure_ascii=False, indent=2)
             
         return {
             "chunks": chunks,
             "embeddings": embeddings,
-            "db": faiss_index_path,
+            "db": str(faiss_index_path),
+            "chunks_file": str(chunks_path),
             "error": None
         }
         
@@ -151,7 +169,7 @@ def search_tool(faiss_index: str, query: str, chunks: List[str]) -> Dict[str, An
     try:
         index = faiss.read_index(faiss_index)
         embeddings_model = OpenAIEmbeddings(
-            model="text-embedding-ada-002",
+            model=EMBEDDING_MODEL,
             openai_api_key=os.getenv("OPENAI_API_KEY")
         )
         query_embedding = embeddings_model.embed_query(query)
