@@ -10,43 +10,132 @@ Dựa trên imports trong code:
 - `pydantic`: Định nghĩa model cho output
 - `python-dotenv`: Quản lý biến môi trường (OPENAI_API_KEY, MODEL_NAME)
 
-## Luồng Xử Lý Multi-Agent
+## Kiến Trúc Hệ Thống Multi-Agent
+
+### Các Thành Phần Chính
+
+1. **State Management (AgentState)**
+   - Quản lý trạng thái của toàn bộ quy trình
+   - Lưu trữ dữ liệu trung gian và kết quả
+   - Theo dõi số lần retry của mỗi agent
+   - Chứa thông tin về lỗi và messages giữa các agents
+
+2. **Tools**
+   - `extract_pdf`: Trích xuất nội dung từ file PDF
+   - `chunk_and_embed`: Phân đoạn văn bản và tạo embeddings
+   - `search_tool`: Tìm kiếm thông tin liên quan trong FAISS index
+   - `check_chunks`: Kiểm tra tính hợp lệ của các chunks
+
+3. **Agents**
+   - `extracted_agent`: Xử lý trích xuất PDF
+   - `chunked_and_embedded_agent`: Quản lý phân đoạn và embeddings
+   - `analyzed_agent`: Phân tích nội dung (xử lý song song)
+   - `verified_agent`: Xác minh kết quả
+   - `aggregated_agent`: Tổng hợp kết quả cuối cùng
+
+4. **Routers**
+   - `condition_a1`: Kiểm tra kết quả trích xuất PDF
+   - `condition_a2`: Kiểm tra tính hợp lệ của chunks
+   - `condition_v`: Kiểm tra kết quả verify
+   - `condition_d`: Kiểm tra báo cáo cuối cùng
+
+### Luồng Xử Lý
 
 ```mermaid
 graph TD
-    START(("Start")) --> A1["Agent A1<br/>extract_pdf.invoke"]
-    
-    A1 --> A1_C{"cleaned_text?<br/><small>retry_count_a1 < 3</small>"}
-    A1_C -->|"Không"| A1
-    A1_C -->|"Lỗi ≥ 3"| ERR["Error Handler"]
-    A1_C -->|"OK"| A2["Agent A2<br/>chunk_and_embed.invoke"]
-    
-    A2 --> A2_C{"check_chunks?<br/><small>retry_count_a2 < 3</small>"}
-    A2_C -->|"Không"| A2
-    A2_C -->|"Lỗi ≥ 3"| ERR
-    A2_C -->|"OK"| AN["Agent Analyze<br/>Xử lý song song<br/><small>batch_size=20, workers=15</small>"]
-    
-    AN --> AN_SAVE["analyze_intermediate.json<br/><small>summaries, entities, stats</small>"]
-    AN_SAVE --> V["Agent Verify<br/>search_tool.invoke"]
-    
-    V --> V_C{"verified?<br/><small>retry_count_analyze < 3</small>"}
-    V_C -->|"Không"| AN
-    V_C -->|"Lỗi ≥ 3"| ERR_F["Error Final"]
-    V_C -->|"OK"| AG["Agent Aggregate<br/>FinalOutput"]
-    
+    %% State Definition
+    subgraph State[AgentState]
+        S1[file_path<br/>cleaned_text<br/>chunks<br/>embeddings]
+        S2[db<br/>question<br/>summary<br/>entities]
+        S3[verified_data<br/>report<br/>error<br/>messages]
+        S4[retry_count_a1<br/>retry_count_a2<br/>retry_count_analyze]
+    end
+
+    %% Tools Definition
+    subgraph Tools[Tools]
+        T1[extract_pdf]
+        T2[chunk_and_embed]
+        T3[search_tool]
+        T4[check_chunks]
+    end
+
+    %% Agents & Their Tools
+    subgraph Agents[Agents]
+        A1["extracted_agent<br/><small>uses: extract_pdf</small>"]
+        A2["chunked_and_embedded_agent<br/><small>uses: chunk_and_embed</small>"]
+        AN["analyzed_agent<br/><small>parallel processing</small>"]
+        AV["verified_agent<br/><small>uses: search_tool</small>"]
+        AG["aggregated_agent<br/><small>creates: FinalOutput</small>"]
+    end
+
+    %% Router/Edge Conditions
+    subgraph Routers[Edge Conditions]
+        R1["condition_a1<br/><small>check: error, cleaned_text</small>"]
+        R2["condition_a2<br/><small>check: error, chunks</small>"]
+        R3["condition_v<br/><small>check: error</small>"]
+        R4["condition_d<br/><small>check: error, report</small>"]
+    end
+
+    %% Flow
+    START(("Start")) --> A1
+    A1 --> R1
+    R1 -->|"error & retry < 3"| A1
+    R1 -->|"success"| A2
+    R1 -->|"error & retry ≥ 3"| ERR[Error Handler]
+
+    A2 --> R2
+    R2 -->|"error & retry < 3"| A2
+    R2 -->|"success"| AN
+    R2 -->|"error & retry ≥ 3"| ERR
+
+    AN --> AV
+    AV --> R3
+    R3 -->|"error & retry < 3"| AN
+    R3 -->|"success"| AG
+    R3 -->|"error & retry ≥ 3"| ERR_F[Error Final]
+
+    AG --> R4
+    R4 -->|"no report"| AV
+    R4 -->|"has report"| END(("End"))
+
     ERR --> AG
     ERR_F --> AG
-    
-    AG --> AG_C{"report?"}
-    AG_C -->|"Không"| V
-    AG_C -->|"Có"| END(("End"))
 
+    %% Styles
     style START fill:#9cf
     style END fill:#9cf
     style ERR fill:#ffcccc
     style ERR_F fill:#ffcccc
-    style AN_SAVE fill:#f9f,stroke:#333,stroke-width:2px
+    style State fill:#e6f3ff
+    style Tools fill:#f0fff0
+    style Agents fill:#fff0f0
+    style Routers fill:#fff3e6
 ```
+
+### Quy Trình Xử Lý
+
+1. **Khởi tạo**
+   - Bắt đầu với file PDF path và câu hỏi
+   - Khởi tạo AgentState với các giá trị mặc định
+
+2. **Trích xuất và Phân đoạn**
+   - Agent A1 trích xuất nội dung PDF
+   - Agent A2 phân đoạn và tạo embeddings
+   - Mỗi agent có 3 lần retry nếu gặp lỗi
+
+3. **Phân tích và Xác minh**
+   - Agent Analyze xử lý song song các chunks
+   - Agent Verify kiểm tra kết quả với search_tool
+   - Có thể quay lại Analyze nếu verify thất bại
+
+4. **Tổng hợp Kết quả**
+   - Agent Aggregate tạo FinalOutput
+   - Bao gồm answer, summary, entities và verified_data
+
+5. **Xử lý Lỗi**
+   - Error Handler cho các lỗi thông thường
+   - Error Final Handler cho lỗi nghiêm trọng
+   - Tất cả đều chuyển đến Aggregate để tổng hợp
 
 ## Các Module Trong Hệ Thống
 
@@ -54,15 +143,15 @@ graph TD
 Định nghĩa các agents và luồng xử lý:
 
 **Các Agent Chính:**
-- `agent_a1_node`: Trích xuất nội dung PDF
-- `agent_a2_node`: Phân đoạn và tạo embeddings
-- `agent_analyze_node`: 
+- `extracted_agent`: Trích xuất nội dung PDF
+- `chunked_and_embedded_agent`: Phân đoạn và tạo embeddings
+- `analyzed_agent`: 
   - Xử lý song song với batch_size=20
   - ThreadPoolExecutor(max_workers=15)
   - Delay 0.2s giữa các batches
   - Lưu kết quả trung gian vào analyze_intermediate.json
-- `agent_verify_node`: Xác minh kết quả với search_tool
-- `agent_aggregate_node`: Tạo output theo FinalOutput model
+- `verified_agent`: Xác minh kết quả với search_tool
+- `aggregated_agent`: Tạo output theo FinalOutput model
 
 **Xử lý Lỗi:**
 - Mỗi agent có 3 lần retry

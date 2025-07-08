@@ -1,7 +1,5 @@
-from langgraph.graph import StateGraph, START, END
 from modules.tools import search_tool, extract_pdf, chunk_and_embed, check_chunks
 from modules.states import AgentState
-from modules.edges import condition_a1, condition_a2, condition_d, condition_v
 from langchain.prompts import ChatPromptTemplate
 from typing import List, Dict, Any
 import json
@@ -21,7 +19,7 @@ logging.basicConfig(
 
 load_dotenv()
 
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-3.5-turbo")  # default if not set
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")  # default if not set
 API_KEY = os.getenv("OPENAI_API_KEY")
 if not API_KEY:
     raise ValueError("OPENAI_API_KEY not found in environment variables")
@@ -33,7 +31,7 @@ llm = ChatOpenAI(
 )
 
 
-def agent_a1_node(state: AgentState) -> AgentState:
+def extracted_agent(state: AgentState) -> AgentState:
     logging.info("🚀 Agent A1: Bắt đầu trích xuất PDF...")
     retry_count = state.get("retry_count_a1", 0)
     if retry_count >= 3:
@@ -59,7 +57,7 @@ def agent_a1_node(state: AgentState) -> AgentState:
     }
 
 
-def agent_a2_node(state: AgentState) -> AgentState:
+def chunked_and_embedded_agent(state: AgentState) -> AgentState:
     logging.info("🚀 Agent A2: Bắt đầu chia nhỏ và tạo embeddings...")
     retry_count = state.get("retry_count_a2", 0)
     if retry_count >= 3:
@@ -112,7 +110,7 @@ def agent_a2_node(state: AgentState) -> AgentState:
 
 
 summarize_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Tóm tắt văn bản sau thành tối đa 100 từ, giữ các ý chính: {text}"),
+    ("system", "Mục đính của hệ thông là nếu người dùng đọc 1 văn bài dài và họ muốn lấy nhanh thông tin quang trọng có trong văn bản. Vì vậy, tóm tắt văn bản sau thành tối đa 100 từ, giữ các ý chính, đồng thời phần tích và đề xuất các phần thông tin quan trọng mà người đọc cần chứ ý đểm agent tiếp theo extract: {text}"),
     ("user", "{text}")
 ])
 extract_prompt = ChatPromptTemplate.from_messages([
@@ -120,7 +118,7 @@ extract_prompt = ChatPromptTemplate.from_messages([
     ("user", "{text}")
 ])
 final_summarize_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Tổng hợp các tóm tắt sau thành một tóm tắt cuối cùng tối đa 200 từ: {summaries}"),
+    ("system", "Tổng hợp ngắn gọn và đầy đủ ý, không quá 1000 từ các phần đã extract được liên kết chúng, mục đích là để nếu người dùng đọc văn bản dài thì họ có thể có được thông tin quan trọng cần chú ý: {summaries}"),
     ("user", "{summaries}")
 ])
 def analyze_chunk_batch(chunk: str) -> Dict:
@@ -238,7 +236,7 @@ def chunk_summaries_for_final(summaries: List[str], max_tokens: int = 150000) ->
     
     return chunks
 
-def agent_analyze_node(state: AgentState) -> AgentState:
+def analyzed_agent(state: AgentState) -> AgentState:
     logging.info("🚀 Agent Analyze: Bắt đầu phân tích nội dung với hiệu suất cao...")
     retry_count = state.get("retry_count_analyze", 0)
     if retry_count >= 3:
@@ -388,7 +386,7 @@ verify_prompt = ChatPromptTemplate.from_messages([
     ("user", "Entities: {entities}")
 ])
 
-def agent_verify_node(state: AgentState) -> AgentState:
+def verified_agent(state: AgentState) -> AgentState:
     logging.info("🚀 Agent Verify: Bắt đầu xác minh kết quả...")
     if state["error"] or not state["entities"] or not state["db"]:
         logging.error(f"❌ Agent Verify: Thiếu dữ liệu để xác minh - {state['error'] or 'Missing data'}")
@@ -431,7 +429,8 @@ class FinalOutput(BaseModel):
     summary: str = Field(description="Tóm tắt nội dung")
     entities: Dict[str, Any] = Field(description="Entities trích xuất")
     verified_data: Dict[str, Any] = Field(description="Dữ liệu đã xác minh")
-def agent_aggregate_node(state: AgentState) -> AgentState:
+
+def aggregated_agent(state: AgentState) -> AgentState:
     logging.info("🚀 Agent Aggregate: Bắt đầu tổng hợp kết quả...")
     if state["error"]:
         logging.error(f"❌ Agent Aggregate: Không thể tổng hợp do lỗi - {state['error']}")

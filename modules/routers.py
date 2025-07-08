@@ -1,7 +1,7 @@
 from langgraph.graph import END
 from modules.tools import check_chunks
 from modules.states import AgentState
-# EDGE
+# ROUTER
 def condition_a1(state: AgentState) -> str:
     if state.get("error") or not state.get("cleaned_text"):
         return "error" if state.get("retry_count_a1", 0) >= 3 else "agent_a1"

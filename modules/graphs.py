@@ -1,22 +1,22 @@
 from langgraph.graph import StateGraph, START, END
 from modules.states import AgentState
-from modules.edges import condition_a1, condition_a2, condition_d, condition_v
+from modules.routers import condition_a1, condition_a2, condition_d, condition_v
 from modules.agents import (
-    agent_a1_node,
-    agent_a2_node,
-    agent_analyze_node,
-    agent_verify_node,
-    agent_aggregate_node
+    extracted_agent,
+    chunked_and_embedded_agent,
+    analyzed_agent,
+    verified_agent,
+    aggregated_agent
 )
 
 def build_graph():
     # Xây dựng StateGraph
     workflow = StateGraph(AgentState)
-    workflow.add_node("agent_a1", agent_a1_node)
-    workflow.add_node("agent_a2", agent_a2_node)
-    workflow.add_node("agent_analyze", agent_analyze_node)
-    workflow.add_node("agent_verify", agent_verify_node)
-    workflow.add_node("agent_aggregate", agent_aggregate_node)
+    workflow.add_node("agent_a1", extracted_agent)
+    workflow.add_node("agent_a2", chunked_and_embedded_agent)
+    workflow.add_node("agent_analyze", analyzed_agent)
+    workflow.add_node("agent_verify", verified_agent)
+    workflow.add_node("agent_aggregate", aggregated_agent)
     workflow.add_node("error_handler", lambda state: state)
     workflow.add_node("error_final_handler", lambda state: state)
 
