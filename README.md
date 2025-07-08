@@ -1,200 +1,218 @@
-# Hệ Thống Multi-Agent Trích Xuất PDF
+# PDF Extract - Multi-Agent PDF Information Extraction
 
-Hệ thống sử dụng kiến trúc Multi-Agent để trích xuất và phân tích thông tin từ tài liệu PDF, với trọng tâm là xử lý song song và tối ưu hiệu suất thông qua việc phân chia công việc cho các agent chuyên biệt.
+PDF Extract là hệ thống multi-agent được thiết kế để trích xuất thông tin quan trọng, chính xác và ngắn gọn từ tài liệu PDF. Hệ thống sử dụng kiến trúc multi-agent kết hợp với large language models để phân tích và tổng hợp thông tin từ các tài liệu dài.
 
-## Thư Viện Sử Dụng
+## Thư viện sử dụng
 
-Dựa trên imports trong code:
-- `langgraph`: Xây dựng StateGraph cho luồng xử lý multi-agent
-- `langchain_openai`: Tương tác với OpenAI API (ChatOpenAI)
-- `pydantic`: Định nghĩa model cho output
-- `python-dotenv`: Quản lý biến môi trường (OPENAI_API_KEY, MODEL_NAME)
+### Core PDF Processing
+- **pdfplumber**: Trích xuất văn bản từ file PDF
 
-## Luồng Xử Lý Multi-Agent
+### LangChain Ecosystem
+- **langchain**: Framework xây dựng ứng dụng AI
+- **langgraph**: Xây dựng luồng xử lý multi-agent
+- **langchain-openai**: Tích hợp với OpenAI API
+- **langchain-text-splitters**: Chia nhỏ văn bản
+
+### Vector Database
+- **faiss-cpu**: Vector database để lưu trữ và tìm kiếm embeddings
+- **numpy**: Xử lý mảng số học
+
+### Web Interface
+- **streamlit**: Xây dựng giao diện người dùng
+
+### Khác
+- **pydantic**: Kiểm tra và xác thực dữ liệu
+- **python-dotenv**: Quản lý biến môi trường
+- **tiktoken**: Tính toán token cho OpenAI models
+
+## Kiến trúc hệ thống
 
 ```mermaid
 graph TD
-    START(("Start")) --> A1["Agent A1<br/>extract_pdf.invoke"]
+    %% Nodes
+    START((START)) --> agent_a1
+    agent_a1[Agent A1:<br/>extracted_agent] 
+    agent_a2[Agent A2:<br/>chunked_and_embedded_agent]
+    agent_analyze[Agent Analyze:<br/>analyzed_agent]
+    agent_verify[Agent Verify:<br/>verified_agent]
+    agent_aggregate[Agent Aggregate:<br/>aggregated_agent]
+    error_handler[Error Handler]
+    error_final_handler[Error Final Handler]
+    END((END))
     
-    A1 --> A1_C{"cleaned_text?<br/><small>retry_count_a1 < 3</small>"}
-    A1_C -->|"Không"| A1
-    A1_C -->|"Lỗi ≥ 3"| ERR["Error Handler"]
-    A1_C -->|"OK"| A2["Agent A2<br/>chunk_and_embed.invoke"]
+    %% Tools
+    tool_extract[Tool:<br/>extract_pdf]
+    tool_chunk[Tool:<br/>chunk_and_embed]
+    tool_search[Tool:<br/>search_tool]
     
-    A2 --> A2_C{"check_chunks?<br/><small>retry_count_a2 < 3</small>"}
-    A2_C -->|"Không"| A2
-    A2_C -->|"Lỗi ≥ 3"| ERR
-    A2_C -->|"OK"| AN["Agent Analyze<br/>Xử lý song song<br/><small>batch_size=20, workers=15</small>"]
+    %% States
+    state_pdf[State:<br/>file_path]
+    state_text[State:<br/>cleaned_text]
+    state_chunks[State:<br/>chunks,embeddings,db]
+    state_analysis[State:<br/>summary,entities]
+    state_verified[State:<br/>verified_data]
+    state_report[State:<br/>report]
     
-    AN --> AN_SAVE["analyze_intermediate.json<br/><small>summaries, entities, stats</small>"]
-    AN_SAVE --> V["Agent Verify<br/>search_tool.invoke"]
+    %% Edges with Routers
+    agent_a1 -->|condition_a1<br/>agent_a2| agent_a2
+    agent_a1 -->|condition_a1<br/>agent_a1| agent_a1
+    agent_a1 -->|condition_a1<br/>error| error_handler
     
-    V --> V_C{"verified?<br/><small>retry_count_analyze < 3</small>"}
-    V_C -->|"Không"| AN
-    V_C -->|"Lỗi ≥ 3"| ERR_F["Error Final"]
-    V_C -->|"OK"| AG["Agent Aggregate<br/>FinalOutput"]
+    agent_a2 -->|condition_a2<br/>agent_analyze| agent_analyze
+    agent_a2 -->|condition_a2<br/>agent_a2| agent_a2
+    agent_a2 -->|condition_a2<br/>error| error_handler
     
-    ERR --> AG
-    ERR_F --> AG
+    agent_analyze --> agent_verify
     
-    AG --> AG_C{"report?"}
-    AG_C -->|"Không"| V
-    AG_C -->|"Có"| END(("End"))
-
-    style START fill:#9cf
-    style END fill:#9cf
-    style ERR fill:#ffcccc
-    style ERR_F fill:#ffcccc
-    style AN_SAVE fill:#f9f,stroke:#333,stroke-width:2px
+    agent_verify -->|condition_v<br/>agent_aggregate| agent_aggregate
+    agent_verify -->|condition_v<br/>agent_analyze| agent_analyze
+    agent_verify -->|condition_v<br/>error_final| error_final_handler
+    
+    agent_aggregate -->|condition_d<br/>agent_verify| agent_verify
+    agent_aggregate -->|condition_d<br/>END| END
+    
+    error_handler --> agent_aggregate
+    error_final_handler --> agent_aggregate
+    
+    %% Tool connections
+    agent_a1 -.->|uses| tool_extract
+    agent_a2 -.->|uses| tool_chunk
+    agent_verify -.->|uses| tool_search
+    
+    %% State transitions
+    agent_a1 -.->|updates| state_text
+    agent_a2 -.->|updates| state_chunks
+    agent_analyze -.->|updates| state_analysis
+    agent_verify -.->|updates| state_verified
+    agent_aggregate -.->|updates| state_report
+    
+    %% Parallel Processing
+    agent_analyze -.->|Parallel Processing| parallel
+    
+    subgraph "High Performance Processing"
+    parallel[ThreadPoolExecutor]
+    parallel --> batch1[Batch 1<br/>20 chunks]
+    parallel --> batch2[Batch 2<br/>20 chunks]
+    parallel --> batchN[Batch N<br/>...]
+    end
+    
+    %% Styling
+    classDef agent fill:#f9f,stroke:#333,stroke-width:2px
+    classDef tool fill:#bbf,stroke:#333,stroke-width:1px
+    classDef state fill:#bfb,stroke:#333,stroke-width:1px
+    classDef control fill:#fbb,stroke:#333,stroke-width:1px
+    
+    class agent_a1,agent_a2,agent_analyze,agent_verify,agent_aggregate agent
+    class tool_extract,tool_chunk,tool_search tool
+    class state_pdf,state_text,state_chunks,state_analysis,state_verified,state_report state
+    class error_handler,error_final_handler,START,END control
 ```
 
-## Các Module Trong Hệ Thống
+## Cấu trúc dự án
 
-### 1. `modules/agents.py`
-Định nghĩa các agents và luồng xử lý:
-
-**Các Agent Chính:**
-- `agent_a1_node`: Trích xuất nội dung PDF
-- `agent_a2_node`: Phân đoạn và tạo embeddings
-- `agent_analyze_node`: 
-  - Xử lý song song với batch_size=20
-  - ThreadPoolExecutor(max_workers=15)
-  - Delay 0.2s giữa các batches
-  - Lưu kết quả trung gian vào analyze_intermediate.json
-- `agent_verify_node`: Xác minh kết quả với search_tool
-- `agent_aggregate_node`: Tạo output theo FinalOutput model
-
-**Xử lý Lỗi:**
-- Mỗi agent có 3 lần retry
-- Các error handlers: error_handler và error_final_handler
-- Logging với timestamp và emoji
-
-### 2. `modules/states.py`
-Định nghĩa trạng thái của hệ thống:
-```python
-class AgentState(TypedDict):
-    file_path: str                      # Đường dẫn PDF
-    cleaned_text: Optional[str]         # Text sau xử lý
-    chunks: List[str]                   # Các đoạn văn bản
-    embeddings: List[List[float]]       # Vector embeddings
-    db: str                            # FAISS index
-    question: str                       # Câu hỏi
-    summary: Optional[str]              # Tóm tắt
-    entities: Optional[Dict[str, Any]]  # Entities
-    verified_data: Optional[Dict[str, Any]]  # Data đã verify
-    report: Optional[str]               # JSON output
-    error: Optional[str]                # Lỗi
-    messages: List[Dict[str, str]]      # Messages giữa agents
-    retry_count_a1: int                 # Số lần retry A1
-    retry_count_a2: int                 # Số lần retry A2
-    retry_count_analyze: int            # Số lần retry Analyze
-```
-
-### 3. Output Format
-```python
-class FinalOutput(BaseModel):
-    answer: str = Field(description="Câu trả lời cho câu hỏi")
-    summary: str = Field(description="Tóm tắt nội dung")
-    entities: Dict[str, Any] = Field(description="Entities trích xuất")
-    verified_data: Dict[str, Any] = Field(description="Dữ liệu đã xác minh")
-```
-
-## Cấu Trúc Project
 ```
 PDF_extract/
-  ├── data/              # Thư mục PDF
-  ├── main.py           # Entry point
-  ├── modules/
-  │   ├── __init__.py
-  │   ├── agents.py     # Các agents
-  │   ├── states.py     # AgentState
-  │   └── tools.py      # Công cụ hỗ trợ
-  └── requirements.txt  # Dependencies
+├── assets/                # Hình ảnh và tài nguyên
+├── data/                  # Dữ liệu mẫu
+├── indices/               # FAISS indices
+├── modules/               # Các module chính
+│   ├── agents.py          # Định nghĩa các agent
+│   ├── graphs.py          # Xây dựng luồng xử lý
+│   ├── routers.py         # Điều hướng giữa các agent
+│   ├── states.py          # Định nghĩa trạng thái
+│   └── tools.py           # Công cụ xử lý
+├── outputs/               # Kết quả đầu ra
+├── temp_files/            # File tạm thời
+├── uploads/               # File PDF được tải lên
+├── main.py                # Entry point cho CLI
+├── streamlit_app.py       # Giao diện Streamlit
+└── requirements.txt       # Dependencies
 ```
 
-## Hiệu Suất Xử Lý
+## Thành phần module
 
-### Tối ưu song song:
-- Batch size: 20 chunks/lần
-- Workers: 15 threads đồng thời
-- Delay: 0.2s giữa các batch
-- Token limit: 150k/chunk
+### 1. States (states.py)
+Định nghĩa cấu trúc dữ liệu `AgentState` để lưu trữ và truyền thông tin giữa các agent:
+- `file_path`: Đường dẫn file PDF
+- `cleaned_text`: Văn bản đã làm sạch
+- `chunks`: Danh sách các đoạn văn bản
+- `embeddings`: Danh sách vector embedding
+- `db`: Đường dẫn FAISS index
+- `summary`, `entities`, `verified_data`: Kết quả xử lý
 
-### Rate Limits:
-- 200k tokens/phút
-- 500 requests/phút
-- Xử lý chunk thông minh
+### 2. Tools (tools.py)
+Cung cấp các công cụ xử lý:
+- `extract_pdf`: Trích xuất văn bản từ PDF
+- `chunk_and_embed`: Chia nhỏ văn bản và tạo embeddings
+- `search_tool`: Tìm kiếm thông tin liên quan
 
-### Xử lý lỗi:
-- Retry tự động (3 lần/agent)
-- Logging chi tiết
-- Lưu trạng thái trung gian
-- Fallback strategies
+### 3. Agents (agents.py)
+Định nghĩa các agent xử lý:
+- `extracted_agent`: Trích xuất văn bản từ PDF
+- `chunked_and_embedded_agent`: Chia nhỏ và tạo embeddings
+- `analyzed_agent`: Phân tích nội dung
+- `verified_agent`: Xác minh kết quả
+- `aggregated_agent`: Tổng hợp kết quả cuối cùng
 
-## Thời Gian Xử Lý
-- Trích xuất PDF: ~13s
-- Phân đoạn & embedding: ~13s
-- Phân tích nội dung: ~3-4s
-- Tổng thời gian: 30-35s
+### 4. Graphs (graphs.py)
+Xây dựng luồng xử lý multi-agent sử dụng LangGraph:
+- Định nghĩa các node (agent)
+- Thiết lập các cạnh và điều kiện chuyển tiếp
+- Xử lý lỗi và retry logic
 
-## Cài Đặt
+### 5. Routers (routers.py)
+Điều hướng luồng xử lý dựa trên kết quả và trạng thái:
+- `condition_a1`, `condition_a2`: Điều kiện chuyển tiếp giữa các agent
+- `condition_d`, `condition_v`: Xử lý lỗi và retry
 
-1. Cài đặt dependencies:
+## Điểm nổi bật trong xử lý multi-agent
+
+### 1. Chunking và Embedding thông minh
+- Chia văn bản thành các đoạn nhỏ (chunks) với kích thước tối ưu 2000 ký tự
+- Xử lý overlap giữa các chunk để đảm bảo ngữ cảnh
+- Tự động điều chỉnh kích thước chunk nếu cần
+
+### 2. Xử lý song song (Parallel Processing)
+- Sử dụng ThreadPoolExecutor để xử lý song song các chunk
+- Tối ưu hóa với batch size 20 chunks mỗi batch
+- Xử lý rate limiting với delay giữa các batch
+
+### 3. Prompt Engineering tối ưu
+- Prompt được thiết kế để trích xuất thông tin quan trọng, chính xác và ngắn gọn
+- Tập trung vào dữ kiện chính, tên, địa điểm, thời gian và số liệu
+- Loại bỏ thông tin trùng lặp và không quan trọng
+
+### 4. Xử lý lỗi và retry
+- Cơ chế retry thông minh cho từng agent
+- Xử lý các lỗi API và rate limiting
+- Lưu trữ trạng thái trung gian để khôi phục khi cần
+
+### 5. Tổng hợp kết quả theo batch
+- Chia summaries thành các batch lớn hơn để tận dụng token limit
+- Tổng hợp thành các entities có cấu trúc: tên, ngày tháng, địa điểm, số liệu
+- Tạo tóm tắt cuối cùng ngắn gọn và súc tích
+
+## Demo Streamlit
+
+![Streamlit Demo](assets/streamlit.jpeg)
+
+Giao diện Streamlit cung cấp:
+- Upload file PDF
+- Cấu hình API key và model
+- Hiển thị kết quả trích xuất theo tabs:
+  - Thông tin quan trọng
+  - Entities (tên, ngày tháng, địa điểm, số liệu)
+  - Raw data
+- Download kết quả dạng JSON
+
+## Cách sử dụng
+
+### Cài đặt
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Thiết lập môi trường:
+### Chạy ứng dụng Streamlit
 ```bash
-OPENAI_API_KEY=your_api_key
-MODEL_NAME=gpt-3.5-turbo
+streamlit run streamlit_app.py
 ```
-
-3. Chuẩn bị file PDF trong thư mục data
-
-## Performance Metrics
-
-- Total processing time: 30-35s (improved from 15-20s)
-- PDF extraction: ~13s
-- Chunking & embeddings: ~13s
-- Content analysis: ~3-4s
-- Verification & aggregation: ~1-2s
-
-## State Management
-
-The system uses a TypedDict-based state management system (`AgentState`) to track:
-- File processing status
-- Extracted text and chunks
-- Embeddings and search indices
-- Analysis results and entities
-- Error states and retry counts
-- Inter-agent messages
-
-## Error Handling
-
-- Automatic retries (3 attempts per agent)
-- Detailed logging with timestamps
-- Error classification and recovery
-- State preservation during retries
-- Graceful degradation options
-
-## Output Format
-
-The final output is a JSON structure containing:
-- Answer to the specific question
-- Document summary
-- Extracted entities (names, dates, locations, numbers)
-- Verified data points
-- Processing metadata
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details. 

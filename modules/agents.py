@@ -1,7 +1,5 @@
-from langgraph.graph import StateGraph, START, END
 from modules.tools import search_tool, extract_pdf, chunk_and_embed, check_chunks
 from modules.states import AgentState
-from modules.edges import condition_a1, condition_a2, condition_d, condition_v
 from langchain.prompts import ChatPromptTemplate
 from typing import List, Dict, Any
 import json
@@ -11,6 +9,8 @@ from dotenv import load_dotenv
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from datetime import datetime
 
 # Cấu hình logging
 logging.basicConfig(
@@ -21,7 +21,7 @@ logging.basicConfig(
 
 load_dotenv()
 
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-3.5-turbo")  # default if not set
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")  # default if not set
 API_KEY = os.getenv("OPENAI_API_KEY")
 if not API_KEY:
     raise ValueError("OPENAI_API_KEY not found in environment variables")
@@ -33,7 +33,7 @@ llm = ChatOpenAI(
 )
 
 
-def agent_a1_node(state: AgentState) -> AgentState:
+def extracted_agent(state: AgentState) -> AgentState:
     logging.info("🚀 Agent A1: Bắt đầu trích xuất PDF...")
     retry_count = state.get("retry_count_a1", 0)
     if retry_count >= 3:
@@ -59,7 +59,7 @@ def agent_a1_node(state: AgentState) -> AgentState:
     }
 
 
-def agent_a2_node(state: AgentState) -> AgentState:
+def chunked_and_embedded_agent(state: AgentState) -> AgentState:
     logging.info("🚀 Agent A2: Bắt đầu chia nhỏ và tạo embeddings...")
     retry_count = state.get("retry_count_a2", 0)
     if retry_count >= 3:
@@ -78,10 +78,14 @@ def agent_a2_node(state: AgentState) -> AgentState:
             chunk_overlap = int(msg.get("chunk_overlap", 200))
             logging.info(f"🔄 Agent A2: Điều chỉnh kích thước chunk={chunk_size}, overlap={chunk_overlap}")
     
+    # Tạo file_id từ file_path
+    file_id = Path(state["file_path"]).stem if state.get("file_path") else "unknown"
+    
     result = chunk_and_embed.invoke({
         "text": state["cleaned_text"],
         "chunk_size": chunk_size,
-        "chunk_overlap": chunk_overlap
+        "chunk_overlap": chunk_overlap,
+        "file_id": file_id
     })
 
     if result.get("error"):
@@ -112,17 +116,53 @@ def agent_a2_node(state: AgentState) -> AgentState:
 
 
 summarize_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Tóm tắt văn bản sau thành tối đa 100 từ, giữ các ý chính: {text}"),
+    ("system", """Nhiệm vụ của bạn là trích xuất thông tin quan trọng, chính xác và ngắn gọn từ văn bản. 
+Tập trung vào:
+1. Dữ kiện chính (facts) và thông tin cốt lõi
+2. Tên người, tổ chức quan trọng
+3. Địa điểm và thời gian cụ thể
+4. Số liệu định lượng và thống kê
+5. Mối quan hệ giữa các thực thể
+
+Bỏ qua:
+- Thông tin trùng lặp
+- Chi tiết không quan trọng
+- Nội dung mang tính quảng cáo
+- Đánh giá chủ quan
+
+Tóm tắt ngắn gọn, súc tích (tối đa 100 từ), chỉ giữ lại thông tin quan trọng nhất."""),
     ("user", "{text}")
 ])
+
 extract_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Trích xuất entities (tên, ngày, địa điểm, số liệu) từ văn bản sau. Trả về JSON: {{'entities': {{'names': [], 'dates': [], 'locations': [], 'numbers': []}}}}"),
+    ("system", """Trích xuất các thực thể (entities) quan trọng từ văn bản sau một cách chính xác và đầy đủ.
+Phân loại thành 4 nhóm:
+1. names: Tên người, tổ chức, công ty, thương hiệu quan trọng
+2. dates: Ngày tháng, mốc thời gian, khoảng thời gian
+3. locations: Địa điểm, quốc gia, thành phố, khu vực địa lý
+4. numbers: Số liệu thống kê, tiền tệ, phần trăm, số đo lường
+
+Chỉ trích xuất các entities thực sự quan trọng và có giá trị thông tin cao.
+Bỏ qua các entities không rõ ràng hoặc không quan trọng.
+Trả về đúng định dạng JSON: {{"entities": {{"names": [], "dates": [], "locations": [], "numbers": []}}}}"""),
     ("user", "{text}")
 ])
+
 final_summarize_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Tổng hợp các tóm tắt sau thành một tóm tắt cuối cùng tối đa 200 từ: {summaries}"),
+    ("system", """Tổng hợp các phần thông tin đã được trích xuất thành một bản tóm tắt hoàn chỉnh, ngắn gọn và có cấu trúc.
+Yêu cầu:
+1. Ngắn gọn, súc tích, không quá 500 từ
+2. Chỉ giữ lại thông tin quan trọng và có giá trị cao
+3. Sắp xếp thông tin theo thứ tự logic và dễ hiểu
+4. Liên kết các thông tin có liên quan với nhau
+5. Đảm bảo chính xác và khách quan
+6. Tập trung vào dữ kiện, số liệu và mối quan hệ giữa các thực thể
+7. Loại bỏ thông tin trùng lặp, không quan trọng hoặc mang tính chủ quan
+
+Mục đích: Giúp người đọc nắm bắt nhanh chóng những thông tin quan trọng nhất từ văn bản gốc."""),
     ("user", "{summaries}")
 ])
+
 def analyze_chunk_batch(chunk: str) -> Dict:
     """Xử lý một chunk đơn lẻ - để dùng trong parallel processing"""
     try:
@@ -238,7 +278,7 @@ def chunk_summaries_for_final(summaries: List[str], max_tokens: int = 150000) ->
     
     return chunks
 
-def agent_analyze_node(state: AgentState) -> AgentState:
+def analyzed_agent(state: AgentState) -> AgentState:
     logging.info("🚀 Agent Analyze: Bắt đầu phân tích nội dung với hiệu suất cao...")
     retry_count = state.get("retry_count_analyze", 0)
     if retry_count >= 3:
@@ -344,8 +384,12 @@ def agent_analyze_node(state: AgentState) -> AgentState:
             # Fallback với nhiều summaries hơn
             final_summary = "\n".join(summaries[:10]) + ("..." if len(summaries) > 10 else "")
         
-        # Lưu intermediate results
-        with open("analyze_intermediate.json", "w", encoding='utf-8') as f:
+        # Lưu intermediate results với tên file unique
+        file_id = Path(state["file_path"]).stem if state.get("file_path") else "unknown"
+        intermediate_filename = f"analyze_intermediate_{file_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        intermediate_path = Path("temp_files") / intermediate_filename
+        
+        with open(intermediate_path, "w", encoding='utf-8') as f:
             json.dump({
                 "summaries": summaries, 
                 "entities": entities,
@@ -384,11 +428,19 @@ def agent_analyze_node(state: AgentState) -> AgentState:
         }
 
 verify_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Xác minh entities có liên quan đến câu hỏi '{question}' và tóm tắt '{summary}' không. Nếu không, gửi message (ví dụ: {{'to': 'agent_a1', 'action': 'retry_clean'}}). Trả về JSON: {{'verified': bool, 'verified_data': dict, 'message': dict}}"),
+    ("system", """Xác minh tính chính xác và đầy đủ của các thực thể (entities) đã được trích xuất.
+Nhiệm vụ của bạn:
+1. Kiểm tra xem các entities có liên quan đến chủ đề chính không
+2. Xác minh tính chính xác của các entities (tên, ngày tháng, địa điểm, số liệu)
+3. Đánh giá mức độ đầy đủ của thông tin đã trích xuất
+4. Phát hiện các thông tin quan trọng bị bỏ sót
+
+Nếu phát hiện vấn đề, gửi message yêu cầu xử lý lại (ví dụ: {{"to": "agent_a1", "action": "retry_clean"}}).
+Trả về JSON: {{"verified": bool, "verified_data": dict, "message": dict}}"""),
     ("user", "Entities: {entities}")
 ])
 
-def agent_verify_node(state: AgentState) -> AgentState:
+def verified_agent(state: AgentState) -> AgentState:
     logging.info("🚀 Agent Verify: Bắt đầu xác minh kết quả...")
     if state["error"] or not state["entities"] or not state["db"]:
         logging.error(f"❌ Agent Verify: Thiếu dữ liệu để xác minh - {state['error'] or 'Missing data'}")
@@ -431,7 +483,8 @@ class FinalOutput(BaseModel):
     summary: str = Field(description="Tóm tắt nội dung")
     entities: Dict[str, Any] = Field(description="Entities trích xuất")
     verified_data: Dict[str, Any] = Field(description="Dữ liệu đã xác minh")
-def agent_aggregate_node(state: AgentState) -> AgentState:
+
+def aggregated_agent(state: AgentState) -> AgentState:
     logging.info("🚀 Agent Aggregate: Bắt đầu tổng hợp kết quả...")
     if state["error"]:
         logging.error(f"❌ Agent Aggregate: Không thể tổng hợp do lỗi - {state['error']}")
