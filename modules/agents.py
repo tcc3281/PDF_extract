@@ -11,6 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime
+from pydantic import BaseModel, Field
 
 # Cấu hình logging
 logging.basicConfig(
@@ -22,12 +23,28 @@ logging.basicConfig(
 load_dotenv()
 
 def get_llm(api_key: str, model_name: str) -> ChatOpenAI:
-    """Khởi tạo LLM với API key và model được truyền vào"""
+    """Tạo ChatOpenAI instance"""
     return ChatOpenAI(
         model=model_name,
         temperature=0,
         api_key=api_key
     )
+
+# Global LLM instance (will be set by the first call)
+_global_llm = None
+
+def set_global_llm(api_key: str, model_name: str):
+    """Set global LLM instance"""
+    global _global_llm
+    _global_llm = ChatOpenAI(
+        model=model_name,
+        temperature=0,
+        api_key=api_key
+    )
+
+def get_global_llm():
+    """Get global LLM instance"""
+    return _global_llm
 
 def extracted_agent(state: AgentState) -> AgentState:
     logging.info("🚀 Agent A1: Bắt đầu trích xuất PDF...")
@@ -162,12 +179,13 @@ Mục đích: Giúp người đọc nắm bắt nhanh chóng những thông tin 
     ("user", "{summaries}")
 ])
 
-def analyze_chunk_batch(chunk: str, api_key: str, model_name: str) -> Dict:
+def analyze_chunk_batch(chunk: str) -> Dict:
     """Xử lý một chunk đơn lẻ - để dùng trong parallel processing"""
     try:
-        # Khởi tạo LLM với API key và model được truyền vào
-        llm = get_llm(api_key, model_name)
-        
+        llm = get_global_llm()
+        if not llm:
+            raise ValueError("Global LLM not initialized")
+            
         # Xử lý summary
         summary_result = llm.invoke(summarize_prompt.format(text=chunk))
         summary = summary_result.content if hasattr(summary_result, "content") else str(summary_result)
@@ -222,19 +240,37 @@ def analyze_chunk_batch(chunk: str, api_key: str, model_name: str) -> Dict:
             "entities": {"names": [], "dates": [], "locations": [], "numbers": []}
         }
 
-def analyze_batch_parallel(batch: List[str], api_key: str, model_name: str, max_workers: int = 10) -> List[Dict]:
-    """Xử lý song song các chunks"""
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(analyze_chunk_batch, chunk, api_key, model_name) for chunk in batch]
+def analyze_batch_parallel(batch: List[str], max_workers: int = 10) -> List[Dict]:
+    """Xử lý batch với parallel processing để tăng tốc"""
+    try:
         results = []
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                results.append(result)
-            except Exception as e:
-                logging.error(f"❌ Lỗi khi xử lý chunk: {str(e)}")
-                results.append({"summary": "", "entities": {"names": [], "dates": [], "locations": [], "numbers": []}})
-    return results
+        
+        # Sử dụng ThreadPoolExecutor để xử lý parallel
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit tất cả chunks trong batch
+            future_to_chunk = {
+                executor.submit(analyze_chunk_batch, chunk): chunk 
+                for chunk in batch
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_chunk):
+                try:
+                    result = future.result(timeout=30)  # 30s timeout per chunk
+                    if result:
+                        results.append(result)
+                except Exception as e:
+                    logging.error(f"❌ Timeout or error in parallel processing: {str(e)}")
+                    # Add fallback result
+                    results.append({
+                        "summary": "Error processing chunk",
+                        "entities": {"names": [], "dates": [], "locations": [], "numbers": []}
+                    })
+        
+        return results
+    except Exception as e:
+        logging.error(f"❌ Error in parallel batch processing: {str(e)}")
+        return []
 
 def count_tokens_estimate(text: str) -> int:
     """Ước tính số tokens (khoảng 3.5 ký tự = 1 token cho tiếng Việt)"""
@@ -267,53 +303,137 @@ def analyzed_agent(state: AgentState) -> AgentState:
     if not state.api_key or not state.model_name:
         return {"error": "API key and model name are required", "messages": state.get("messages", [])}
         
-    logging.info("🚀 Agent A3: Bắt đầu phân tích nội dung...")
-    retry_count = state.get("retry_count_analyze", 0)
+    # Set global LLM
+    set_global_llm(state.api_key, state.model_name)
+    
+    logging.info("🚀 Agent Analyze: Bắt đầu phân tích nội dung với hiệu suất cao...")
+    
+    # Fix: Ensure retry_count is an integer
+    retry_count = int(state.get("retry_count_analyze", 0))
     if retry_count >= 3:
-        logging.error("❌ Agent A3: Đã thử 3 lần nhưng không thành công")
+        logging.error("❌ Agent Analyze: Đã thử 3 lần nhưng không thành công")
         return {"error": "Analysis failed after 3 retries", "messages": state.get("messages", [])}
     
-    if state["error"] or not state["chunks"]:
-        logging.error(f"❌ Agent A3: Không có chunks để phân tích - {state['error'] or 'No chunks'}")
-        return {"error": state["error"] or "No chunks", "messages": state.get("messages", [])}
+    # Fix: Better error checking
+    if state.get("error") or not state.get("chunks"):
+        error_msg = state.get("error") or "No chunks available"
+        logging.error(f"❌ Agent Analyze: Không có chunks để phân tích - {error_msg}")
+        return {"error": error_msg, "messages": state.get("messages", [])}
     
     try:
-        # Xử lý song song các chunks
-        results = analyze_batch_parallel(state["chunks"], state.api_key, state.model_name)
+        # Tăng batch size để tận dụng rate limit cao
+        batch_size = 20  # Tăng từ 5 lên 20 
+        chunks = state["chunks"]
+        batches = [chunks[i:i + batch_size] for i in range(0, len(chunks), batch_size)]
+        logging.info(f"📊 Agent Analyze: Xử lý {len(batches)} batches với batch_size={batch_size} (parallel mode)...")
+
+        summaries = []
+        entities = {"names": [], "dates": [], "locations": [], "numbers": []}
         
-        # Tổng hợp kết quả
-        all_summaries = []
-        all_entities = {"names": set(), "dates": set(), "locations": set(), "numbers": set()}
-        
-        for result in results:
-            if "summary" in result:
-                all_summaries.append(result["summary"])
+        # Xử lý các batches với parallel processing
+        for i, batch in enumerate(batches):
+            # Giảm delay xuống chỉ 0.2s giữa batches để tận dụng 500 RPM
+            if i > 0:
+                time.sleep(0.2)
             
-            if "entities" in result:
-                entities = result["entities"]
-                for key in all_entities:
-                    if key in entities:
-                        all_entities[key].update(entities[key])
+            logging.info(f"🔄 Processing batch {i+1}/{len(batches)} với {len(batch)} chunks...")
+            
+            # Sử dụng parallel processing cho từng batch
+            batch_results = analyze_batch_parallel(batch, max_workers=min(15, len(batch)))
+            
+            if not batch_results:
+                logging.warning(f"⚠️ Batch {i+1} không có kết quả")
+                continue
+                
+            for result in batch_results:
+                if not result:
+                    continue
+                summaries.append(result["summary"])
+                for key in entities:
+                    if key in result["entities"] and isinstance(result["entities"][key], list):
+                        entities[key].extend(result["entities"][key])
         
-        # Chuyển set thành list
-        final_entities = {k: sorted(list(v)) for k, v in all_entities.items()}
+        if not summaries:
+            raise ValueError("Không có summary nào được tạo thành công")
+            
+        # Loại bỏ duplicates
+        for key in entities:
+            entities[key] = list(set(entities[key]))
         
-        # Tổng hợp summary cuối cùng
-        llm = get_llm(state.api_key, state.model_name)
-        final_summary = llm.invoke(final_summarize_prompt.format(summaries="\n\n".join(all_summaries)))
-        final_summary = final_summary.content if hasattr(final_summary, "content") else str(final_summary)
+        # Optimized final summary processing với token limit cao hơn
+        llm = get_global_llm()
+        try:
+            # Tận dụng token limit 200k - chia thành chunks lớn hơn
+            summary_chunks = chunk_summaries_for_final(summaries, max_tokens=150000)
+            logging.info(f"📝 Chia {len(summaries)} summaries thành {len(summary_chunks)} chunks để xử lý")
+            
+            if len(summary_chunks) == 1:
+                # Xử lý 1 chunk lớn
+                final_summary_result = llm.invoke(final_summarize_prompt.format(summaries="\n".join(summary_chunks[0])))
+                final_summary = final_summary_result.content if hasattr(final_summary_result, "content") else str(final_summary_result)
+            else:
+                # Xử lý parallel các summary chunks
+                chunk_summaries = []
+                
+                def process_summary_chunk(chunk_data):
+                    chunk_idx, chunk = chunk_data
+                    try:
+                        chunk_result = llm.invoke(final_summarize_prompt.format(summaries="\n".join(chunk)))
+                        return chunk_result.content if hasattr(chunk_result, "content") else str(chunk_result)
+                    except Exception as e:
+                        logging.warning(f"⚠️ Lỗi khi xử lý summary chunk {chunk_idx}: {str(e)}")
+                        return " ".join(chunk[:5])  # Fallback với nhiều summaries hơn
+                
+                # Parallel processing cho summary chunks
+                with ThreadPoolExecutor(max_workers=min(5, len(summary_chunks))) as executor:
+                    chunk_futures = {
+                        executor.submit(process_summary_chunk, (i, chunk)): i 
+                        for i, chunk in enumerate(summary_chunks)
+                    }
+                    
+                    for future in as_completed(chunk_futures):
+                        try:
+                            result = future.result(timeout=60)  # Longer timeout for summary
+                            chunk_summaries.append(result)
+                        except Exception as e:
+                            logging.warning(f"⚠️ Timeout in summary processing: {str(e)}")
+                            chunk_summaries.append("Summary processing failed")
+                
+                # Final combination
+                if len(chunk_summaries) > 1:
+                    try:
+                        time.sleep(0.5)  # Brief delay
+                        final_result = llm.invoke(final_summarize_prompt.format(summaries="\n".join(chunk_summaries)))
+                        final_summary = final_result.content if hasattr(final_result, "content") else str(final_result)
+                    except Exception as e:
+                        logging.warning(f"⚠️ Lỗi khi combine final summary: {str(e)}")
+                        final_summary = "\n\n".join(chunk_summaries)
+                else:
+                    final_summary = chunk_summaries[0] if chunk_summaries else "Không thể tạo summary"
+                    
+        except Exception as e:
+            logging.error(f"❌ Lỗi khi tạo final summary: {str(e)}")
+            # Fallback với nhiều summaries hơn
+            final_summary = "\n".join(summaries[:10]) + ("..." if len(summaries) > 10 else "")
         
-        logging.info("✅ Agent A3: Đã phân tích thành công")
+        logging.info(f"""✅ Agent Analyze: Phân tích thành công (High Performance Mode):
+        - {len(summaries)} summaries
+        - {len(entities['names'])} tên
+        - {len(entities['dates'])} ngày tháng  
+        - {len(entities['locations'])} địa điểm
+        - {len(entities['numbers'])} số liệu
+        - Final summary: {len(final_summary)} ký tự
+        - Processed {len(chunks)} chunks in {len(batches)} batches""")
+        
         return {
             "summary": final_summary,
-            "entities": final_entities,
+            "entities": entities,
             "retry_count_analyze": retry_count + 1,
             "error": None,
             "messages": state.get("messages", [])
         }
-        
     except Exception as e:
-        logging.error(f"❌ Agent A3: Lỗi khi phân tích - {str(e)}")
+        logging.error(f"❌ Agent Analyze: Lỗi khi phân tích - {str(e)}")
         return {
             "error": str(e),
             "retry_count_analyze": retry_count + 1,
@@ -339,17 +459,16 @@ def verified_agent(state: AgentState) -> AgentState:
         return {"error": "API key and model name are required", "messages": state.get("messages", [])}
         
     logging.info("🚀 Agent Verify: Bắt đầu xác minh kết quả...")
-    if state["error"] or not state["entities"] or not state["db"]:
-        logging.error(f"❌ Agent Verify: Thiếu dữ liệu để xác minh - {state['error'] or 'Missing data'}")
-        return {"error": state["error"] or "Missing data", "messages": state.get("messages", [])}
+    if state.get("error") or not state.get("entities") or not state.get("db"):
+        error_msg = state.get("error") or "Missing data"
+        logging.error(f"❌ Agent Verify: Thiếu dữ liệu để xác minh - {error_msg}")
+        return {"error": error_msg, "messages": state.get("messages", [])}
     
     try:
         result = search_tool.invoke({
             "faiss_index": state["db"],
             "query": state["question"],
-            "chunks": state["chunks"],
-            "api_key": state.api_key,
-            "embedding_model": state.embedding_model
+            "chunks": state["chunks"]
         })
         
         llm = get_llm(state.api_key, state.model_name)
@@ -377,7 +496,6 @@ def verified_agent(state: AgentState) -> AgentState:
         return {"error": str(e), "messages": state.get("messages", [])}
 
 
-from pydantic import BaseModel, Field
 class FinalOutput(BaseModel):
     answer: str = Field(description="Câu trả lời cho câu hỏi")
     summary: str = Field(description="Tóm tắt nội dung")
@@ -385,14 +503,12 @@ class FinalOutput(BaseModel):
     verified_data: Dict[str, Any] = Field(description="Dữ liệu đã xác minh")
 
 def aggregated_agent(state: AgentState) -> AgentState:
-    """Agent tổng hợp kết quả cuối cùng"""
-    if not state.api_key or not state.model_name:
-        return {"error": "API key and model name are required", "messages": state.get("messages", [])}
-        
+    """Agent tổng hợp kết quả"""
     logging.info("🚀 Agent Aggregate: Bắt đầu tổng hợp kết quả...")
-    if state["error"]:
-        logging.error(f"❌ Agent Aggregate: Không thể tổng hợp do lỗi - {state['error']}")
-        return {"report": f"Error: {state['error']}", "messages": state.get("messages", [])}
+    if state.get("error"):
+        error_msg = state.get("error")
+        logging.error(f"❌ Agent Aggregate: Không thể tổng hợp do lỗi - {error_msg}")
+        return {"report": f"Error: {error_msg}", "messages": state.get("messages", [])}
     
     try:
         final_result = FinalOutput(
