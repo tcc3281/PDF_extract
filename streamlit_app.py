@@ -55,6 +55,27 @@ def save_uploaded_file(uploaded_file):
     
     return file_path
 
+def get_optimized_prompt():
+    """Tạo prompt tối ưu cho việc trích xuất thông tin"""
+    return """Trích xuất thông tin quan trọng, chính xác và ngắn gọn từ tài liệu này. 
+Tập trung vào:
+1. Các dữ kiện chính (facts) và số liệu quan trọng
+2. Tên người, tổ chức, địa điểm và thời gian chính xác
+3. Các mốc thời gian và sự kiện quan trọng
+4. Các thông tin định lượng (số liệu, thống kê)
+
+Kết quả cần:
+- Ngắn gọn, súc tích, không dài dòng
+- Chính xác, trung thực với nội dung gốc
+- Có cấu trúc rõ ràng
+- Ưu tiên thông tin có giá trị cao
+
+Bỏ qua các thông tin:
+- Mang tính chủ quan, đánh giá
+- Thông tin trùng lặp
+- Chi tiết không quan trọng
+- Nội dung mang tính quảng cáo"""
+
 def run_extraction(file_path, api_key, model_name):
     """Chạy quá trình trích xuất PDF"""
     # Set API key
@@ -62,10 +83,10 @@ def run_extraction(file_path, api_key, model_name):
     os.environ["MODEL_NAME"] = model_name
     
     try:
-        # Khởi tạo state
+        # Khởi tạo state với prompt tối ưu
         initial_state = AgentState(
             file_path=file_path,
-            question="Tóm tắt và trích xuất thông tin quan trọng từ tài liệu này",
+            question=get_optimized_prompt(),
             cleaned_text=None,
             chunks=[],
             embeddings=[],
@@ -117,7 +138,7 @@ def save_result_json(result, filename):
     return output_path
 
 def main():
-    st.title("📄 PDF Extract")
+    st.title("📄 PDF Extract - Trích xuất thông tin quan trọng")
     
     # Sidebar cho cấu hình
     with st.sidebar:
@@ -127,6 +148,15 @@ def main():
         
         model_options = ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo", "gpt-4-turbo"]
         model = st.selectbox("Chọn Model", model_options, index=0)
+        
+        with st.expander("ℹ️ Về công cụ này"):
+            st.write("""
+            **PDF Extract** là công cụ multi-agent được tối ưu hóa để:
+            - Trích xuất thông tin quan trọng và chính xác từ PDF
+            - Tóm tắt nội dung một cách ngắn gọn, súc tích
+            - Nhận diện entities: tên, địa điểm, thời gian, số liệu
+            - Loại bỏ thông tin thừa, không quan trọng
+            """)
     
     # Main content
     col1, col2 = st.columns([1, 1])
@@ -139,14 +169,14 @@ def main():
         if uploaded_file:
             st.success(f"✅ Đã chọn: {uploaded_file.name}")
             
-            if st.button("🚀 Extract", type="primary", disabled=not api_key):
+            if st.button("🚀 Extract Thông Tin Quan Trọng", type="primary", disabled=not api_key):
                 if not api_key:
                     st.error("⚠️ Vui lòng nhập API key")
                 else:
                     # Reset logs
                     st.session_state.logs = []
                     
-                    with st.spinner("Đang xử lý..."):
+                    with st.spinner("Đang trích xuất thông tin quan trọng..."):
                         # Lưu file
                         file_path = save_uploaded_file(uploaded_file)
                         
@@ -174,10 +204,10 @@ def main():
                             st.success("✅ Trích xuất thành công!")
                             st.balloons()
         else:
-            st.info("👆 Vui lòng upload file PDF")
+            st.info("👆 Vui lòng upload file PDF để bắt đầu trích xuất thông tin quan trọng")
     
     with col2:
-        st.header("Kết quả")
+        st.header("Kết quả trích xuất")
         
         # Cập nhật logs từ queue
         while not log_queue.empty():
@@ -206,18 +236,18 @@ def main():
                 entities = result.get('entities', {})
             
             # Hiển thị kết quả
-            tab1, tab2, tab3 = st.tabs(["Tóm tắt", "Entities", "Raw Data"])
+            tab1, tab2, tab3 = st.tabs(["📝 Thông tin quan trọng", "🏷️ Entities", "📄 Raw Data"])
             
             with tab1:
                 if summary:
-                    st.markdown("### Tóm tắt")
+                    st.markdown("### Thông tin quan trọng")
                     st.write(summary)
                 else:
-                    st.info("Không có tóm tắt")
+                    st.info("Chưa có thông tin được trích xuất")
             
             with tab2:
                 if entities:
-                    st.markdown("### Entities")
+                    st.markdown("### Entities đã trích xuất")
                     
                     # Hiển thị các loại entities
                     for entity_type, icon in [
@@ -253,15 +283,15 @@ def main():
                         json_data = f.read()
                     
                     st.download_button(
-                        "📥 Download JSON",
+                        "📥 Download Kết Quả (JSON)",
                         json_data,
-                        file_name=f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        file_name=f"extracted_info_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                         mime="application/json"
                     )
                 except Exception as e:
                     st.error(f"Lỗi tải file: {str(e)}")
         else:
-            st.info("👈 Upload file và nhấn Extract để xem kết quả")
+            st.info("👈 Upload file và nhấn Extract để xem thông tin quan trọng được trích xuất")
 
 if __name__ == "__main__":
     main() 

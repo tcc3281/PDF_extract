@@ -116,17 +116,53 @@ def chunked_and_embedded_agent(state: AgentState) -> AgentState:
 
 
 summarize_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Mục đính của hệ thông là nếu người dùng đọc 1 văn bài dài và họ muốn lấy nhanh thông tin quang trọng có trong văn bản. Vì vậy, tóm tắt văn bản sau thành tối đa 100 từ, giữ các ý chính, đồng thời phần tích và đề xuất các phần thông tin quan trọng mà người đọc cần chứ ý đểm agent tiếp theo extract: {text}"),
+    ("system", """Nhiệm vụ của bạn là trích xuất thông tin quan trọng, chính xác và ngắn gọn từ văn bản. 
+Tập trung vào:
+1. Dữ kiện chính (facts) và thông tin cốt lõi
+2. Tên người, tổ chức quan trọng
+3. Địa điểm và thời gian cụ thể
+4. Số liệu định lượng và thống kê
+5. Mối quan hệ giữa các thực thể
+
+Bỏ qua:
+- Thông tin trùng lặp
+- Chi tiết không quan trọng
+- Nội dung mang tính quảng cáo
+- Đánh giá chủ quan
+
+Tóm tắt ngắn gọn, súc tích (tối đa 100 từ), chỉ giữ lại thông tin quan trọng nhất."""),
     ("user", "{text}")
 ])
+
 extract_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Trích xuất entities (tên, ngày, địa điểm, số liệu) từ văn bản sau. Trả về JSON: {{'entities': {{'names': [], 'dates': [], 'locations': [], 'numbers': []}}}}"),
+    ("system", """Trích xuất các thực thể (entities) quan trọng từ văn bản sau một cách chính xác và đầy đủ.
+Phân loại thành 4 nhóm:
+1. names: Tên người, tổ chức, công ty, thương hiệu quan trọng
+2. dates: Ngày tháng, mốc thời gian, khoảng thời gian
+3. locations: Địa điểm, quốc gia, thành phố, khu vực địa lý
+4. numbers: Số liệu thống kê, tiền tệ, phần trăm, số đo lường
+
+Chỉ trích xuất các entities thực sự quan trọng và có giá trị thông tin cao.
+Bỏ qua các entities không rõ ràng hoặc không quan trọng.
+Trả về đúng định dạng JSON: {{"entities": {{"names": [], "dates": [], "locations": [], "numbers": []}}}}"""),
     ("user", "{text}")
 ])
+
 final_summarize_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Tổng hợp ngắn gọn và đầy đủ ý, không quá 1000 từ các phần đã extract được liên kết chúng, mục đích là để nếu người dùng đọc văn bản dài thì họ có thể có được thông tin quan trọng cần chú ý: {summaries}"),
+    ("system", """Tổng hợp các phần thông tin đã được trích xuất thành một bản tóm tắt hoàn chỉnh, ngắn gọn và có cấu trúc.
+Yêu cầu:
+1. Ngắn gọn, súc tích, không quá 500 từ
+2. Chỉ giữ lại thông tin quan trọng và có giá trị cao
+3. Sắp xếp thông tin theo thứ tự logic và dễ hiểu
+4. Liên kết các thông tin có liên quan với nhau
+5. Đảm bảo chính xác và khách quan
+6. Tập trung vào dữ kiện, số liệu và mối quan hệ giữa các thực thể
+7. Loại bỏ thông tin trùng lặp, không quan trọng hoặc mang tính chủ quan
+
+Mục đích: Giúp người đọc nắm bắt nhanh chóng những thông tin quan trọng nhất từ văn bản gốc."""),
     ("user", "{summaries}")
 ])
+
 def analyze_chunk_batch(chunk: str) -> Dict:
     """Xử lý một chunk đơn lẻ - để dùng trong parallel processing"""
     try:
@@ -392,7 +428,15 @@ def analyzed_agent(state: AgentState) -> AgentState:
         }
 
 verify_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Xác minh entities có liên quan đến câu hỏi '{question}' và tóm tắt '{summary}' không. Nếu không, gửi message (ví dụ: {{'to': 'agent_a1', 'action': 'retry_clean'}}). Trả về JSON: {{'verified': bool, 'verified_data': dict, 'message': dict}}"),
+    ("system", """Xác minh tính chính xác và đầy đủ của các thực thể (entities) đã được trích xuất.
+Nhiệm vụ của bạn:
+1. Kiểm tra xem các entities có liên quan đến chủ đề chính không
+2. Xác minh tính chính xác của các entities (tên, ngày tháng, địa điểm, số liệu)
+3. Đánh giá mức độ đầy đủ của thông tin đã trích xuất
+4. Phát hiện các thông tin quan trọng bị bỏ sót
+
+Nếu phát hiện vấn đề, gửi message yêu cầu xử lý lại (ví dụ: {{"to": "agent_a1", "action": "retry_clean"}}).
+Trả về JSON: {{"verified": bool, "verified_data": dict, "message": dict}}"""),
     ("user", "Entities: {entities}")
 ])
 
