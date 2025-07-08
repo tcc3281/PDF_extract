@@ -1,18 +1,47 @@
 from typing import TypedDict, Optional, Dict, Any, List
+from dataclasses import dataclass, field
 
-class AgentState(TypedDict):
+@dataclass
+class AgentState:
+    # Required fields
     file_path: str                      # Đường dẫn file PDF
-    cleaned_text: Optional[str]         # Văn bản đã làm sạch
-    chunks: List[str]                   # Danh sách các đoạn văn bản
-    embeddings: List[List[float]]       # Danh sách vector embedding
-    db: str                            # Đường dẫn FAISS index
     question: str                       # Câu hỏi người dùng
-    summary: Optional[str]              # Tóm tắt nội dung
-    entities: Optional[Dict[str, Any]]  # Entities trích xuất
-    verified_data: Optional[Dict[str, Any]]  # Dữ liệu đã xác minh
-    report: Optional[str]               # Báo cáo JSON cuối cùng
-    error: Optional[str]                # Lỗi nếu có
-    messages: List[Dict[str, str]]      # Thông điệp giữa các tác nhân
-    retry_count_a1: int                 # Số lần retry của A1
-    retry_count_a2: int                 # Số lần retry của A2
-    retry_count_analyze: int            # Số lần retry của Analyze
+    
+    # Optional fields with default values
+    cleaned_text: Optional[str] = None
+    chunks: List[str] = field(default_factory=list)
+    embeddings: List[Any] = field(default_factory=list)
+    db: str = ""
+    summary: Optional[str] = None
+    entities: Optional[Dict] = None
+    verified_data: Optional[Dict] = None
+    report: Optional[str] = None
+    error: Optional[str] = None
+    messages: List[Dict] = field(default_factory=list)
+    
+    # Retry counters
+    retry_count_a1: int = 0
+    retry_count_a2: int = 0
+    retry_count_analyze: int = 0
+    
+    # Model configurations
+    api_key: Optional[str] = None
+    model_name: Optional[str] = None
+    embedding_model: Optional[str] = None
+
+    def __post_init__(self):
+        if self.chunks is None:
+            self.chunks = []
+        if self.embeddings is None:
+            self.embeddings = []
+        if self.messages is None:
+            self.messages = []
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def __setitem__(self, key: str, value: Any):
+        setattr(self, key, value)

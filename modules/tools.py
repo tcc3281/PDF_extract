@@ -15,8 +15,6 @@ from datetime import datetime
 
 load_dotenv()
 
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
-
 def check_chunks(chunks: List[str]) -> bool:
     return all(500 <= len(chunk) <= 3000 for chunk in chunks) and len(chunks) < 1000 and all(chunk.strip() for chunk in chunks)
 
@@ -52,7 +50,7 @@ def extract_pdf(pdf_path: str) -> Optional[Dict[str, Any]]:
         return {"cleaned_text": None, "error": str(e)}
 
 @tool
-def chunk_and_embed(text: str, chunk_size: int = 2000, chunk_overlap: int = 200, file_id: str = None) -> Dict[str, Any]:
+def chunk_and_embed(text: str, chunk_size: int = 2000, chunk_overlap: int = 200, file_id: str = None, api_key: str = None, embedding_model: str = None) -> Dict[str, Any]:
     """
     Split text into chunks and create embeddings using OpenAI's API.
     
@@ -61,6 +59,8 @@ def chunk_and_embed(text: str, chunk_size: int = 2000, chunk_overlap: int = 200,
         chunk_size (int): Size of each chunk (default: 2000)
         chunk_overlap (int): Overlap between chunks (default: 200)
         file_id (str): Optional file identifier for unique naming
+        api_key (str): OpenAI API key
+        embedding_model (str): Embedding model name
         
     Returns:
         Dict with keys:
@@ -83,8 +83,8 @@ def chunk_and_embed(text: str, chunk_size: int = 2000, chunk_overlap: int = 200,
     
     # Initialize embeddings model
     embeddings_model = OpenAIEmbeddings(
-        model=EMBEDDING_MODEL,
-        openai_api_key=os.getenv("OPENAI_API_KEY")
+        model=embedding_model or "text-embedding-ada-002",
+        openai_api_key=api_key
     )
     
     # Process chunks in smaller batches with delay
@@ -153,7 +153,7 @@ def chunk_and_embed(text: str, chunk_size: int = 2000, chunk_overlap: int = 200,
 
 # Tool: Tìm kiếm FAISS
 @tool
-def search_tool(faiss_index: str, query: str, chunks: List[str]) -> Dict[str, Any]:
+def search_tool(faiss_index: str, query: str, chunks: List[str], api_key: str = None, embedding_model: str = None) -> Dict[str, Any]:
     """
     Search for relevant text chunks using FAISS index.
     
@@ -161,6 +161,8 @@ def search_tool(faiss_index: str, query: str, chunks: List[str]) -> Dict[str, An
         faiss_index (str): Path to FAISS index file
         query (str): Search query
         chunks (List[str]): List of text chunks
+        api_key (str): OpenAI API key
+        embedding_model (str): Embedding model name
         
     Returns:
         Dict with keys:
@@ -169,8 +171,8 @@ def search_tool(faiss_index: str, query: str, chunks: List[str]) -> Dict[str, An
     try:
         index = faiss.read_index(faiss_index)
         embeddings_model = OpenAIEmbeddings(
-            model=EMBEDDING_MODEL,
-            openai_api_key=os.getenv("OPENAI_API_KEY")
+            model=embedding_model or "text-embedding-ada-002",
+            openai_api_key=api_key
         )
         query_embedding = embeddings_model.embed_query(query)
         k = min(3, len(chunks))  # Ensure k doesn't exceed number of chunks

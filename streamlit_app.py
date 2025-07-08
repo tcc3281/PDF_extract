@@ -76,12 +76,8 @@ Bỏ qua các thông tin:
 - Chi tiết không quan trọng
 - Nội dung mang tính quảng cáo"""
 
-def run_extraction(file_path, api_key, model_name):
+def run_extraction(file_path, api_key, model_name, embedding_model):
     """Chạy quá trình trích xuất PDF"""
-    # Set API key
-    os.environ["OPENAI_API_KEY"] = api_key
-    os.environ["MODEL_NAME"] = model_name
-    
     try:
         # Khởi tạo state với prompt tối ưu
         initial_state = AgentState(
@@ -99,7 +95,10 @@ def run_extraction(file_path, api_key, model_name):
             messages=[],
             retry_count_a1=0,
             retry_count_a2=0,
-            retry_count_analyze=0
+            retry_count_analyze=0,
+            api_key=api_key,
+            model_name=model_name,
+            embedding_model=embedding_model
         )
         
         # Xây dựng và chạy graph
@@ -146,8 +145,11 @@ def main():
         
         api_key = st.text_input("OpenAI API Key", type="password")
         
-        model_options = ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo", "gpt-4-turbo"]
+        model_options = ["gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "gpt-4.1-mini"]
         model = st.selectbox("Chọn Model", model_options, index=0)
+        
+        embedding_options = ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"]
+        embedding_model = st.selectbox("Chọn Embedding Model", embedding_options, index=0)
         
         with st.expander("ℹ️ Về công cụ này"):
             st.write("""
@@ -180,8 +182,13 @@ def main():
                         # Lưu file
                         file_path = save_uploaded_file(uploaded_file)
                         
-                        # Chạy extraction
-                        result, error = run_extraction(file_path, api_key, model)
+                        # Chạy extraction với các model được chọn
+                        result, error = run_extraction(
+                            file_path=file_path,
+                            api_key=api_key,
+                            model_name=model,
+                            embedding_model=embedding_model
+                        )
                         
                         # Lấy logs từ queue
                         while not log_queue.empty():
