@@ -140,3 +140,14 @@ dmypy.json
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Thư mục tạm và uploads
+uploads/*
+!uploads/.gitkeep
+outputs/*
+!outputs/.gitkeep
+temp_files/*
+!temp_files/.gitkeep
+indices/*
+!indices/.gitkeep
+requirements-dev.txt
