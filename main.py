@@ -3,7 +3,7 @@ from modules.graphs import build_graph
 if __name__ == '__main__':
     graph = build_graph()
     result = graph.invoke({
-        "file_path": "Sổ tay sinh viên 2021 (có bìa kèm theo).pdf",
+        "file_path": "data/JD_Intern_AI_Engineer_technica_v1.1.pdf",
         "question": "Trích xuất các nội dung quan trọng của văn bản",
         "cleaned_text": None,
         "chunks": [],
