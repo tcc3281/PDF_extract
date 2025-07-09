@@ -675,6 +675,71 @@ def analyzed_agent(state: AgentState) -> AgentState:
             "messages": []  # Clear messages
         }
 
+optimize_search_prompt = ChatPromptTemplate.from_messages([
+    ("system", """Bạn là một expert về information retrieval. Nhiệm vụ của bạn là:
+1. Phân tích câu hỏi và nội dung tóm tắt để xác định các thông tin quan trọng cần tìm
+2. Tạo các query tối ưu để tìm kiếm thông tin
+3. Đề xuất số lượng chunks phù hợp dựa trên độ phức tạp của thông tin
+
+Trả về JSON theo format:
+{
+    "queries": [
+        {
+            "query": "câu query tìm kiếm",
+            "focus": "mục đích của query này",
+            "expected_chunks": số_chunk_cần_thiết
+        }
+    ],
+    "reasoning": "giải thích lý do chọn các query và số chunk"
+}"""),
+    ("user", """Question: {question}
+Summary: {summary}
+Current entities: {entities}
+
+Hãy phân tích và đề xuất chiến lược tìm kiếm tối ưu.""")
+])
+
+def optimize_search_query(
+    question: str,
+    summary: str,
+    entities: Dict,
+    api_key: str,
+    model_name: str
+) -> Dict:
+    """Sử dụng LLM để tối ưu hóa query tìm kiếm và số lượng chunks"""
+    try:
+        llm = get_llm(api_key, model_name)
+        response = llm.invoke(optimize_search_prompt.format(
+            question=question,
+            summary=summary,
+            entities=json.dumps(entities, ensure_ascii=False)
+        ))
+        
+        try:
+            result = json.loads(response.content)
+            return result
+        except json.JSONDecodeError:
+            logging.error("❌ Không thể parse kết quả từ LLM optimize")
+            return {
+                "queries": [{
+                    "query": question,
+                    "focus": "fallback to original question",
+                    "expected_chunks": 8
+                }],
+                "reasoning": "Failed to parse LLM response, using fallback"
+            }
+            
+    except Exception as e:
+        logging.error(f"❌ Lỗi khi optimize query: {str(e)}")
+        return {
+            "queries": [{
+                "query": question,
+                "focus": "fallback to original question",
+                "expected_chunks": 8
+            }],
+            "reasoning": f"Error during optimization: {str(e)}"
+        }
+
 verify_prompt = ChatPromptTemplate.from_messages([
     ("system", """Xác minh tính chính xác và đầy đủ của các thực thể (entities) đã được trích xuất dựa trên câu hỏi và tóm tắt nội dung.
 
@@ -708,7 +773,7 @@ def verified_agent(state: AgentState) -> AgentState:
         return {
             "error": error_msg, 
             "retry_count_verify": retry_count + 1,
-            "messages": []  # Clear messages
+            "messages": []
         }
     
     # Kiểm tra summary-only mode
@@ -717,39 +782,49 @@ def verified_agent(state: AgentState) -> AgentState:
         logging.info("🔍 Agent Verify: Xử lý summary-only mode")
     
     try:
-        # Sử dụng summary từ analysis_agent làm query thay vì câu hỏi gốc
-        search_query = state.get("summary", state["question"])
-        logging.info(f"🔍 Agent Verify: Tìm kiếm với query dài {len(search_query)} ký tự")
+        # Sử dụng LLM để tối ưu hóa query và số lượng chunks
+        search_strategy = optimize_search_query(
+            question=state["question"],
+            summary=state.get("summary", ""),
+            entities=state["entities"],
+            api_key=state.api_key,
+            model_name=state.model_name
+        )
         
-        # Tăng k lên để có nhiều kết quả hơn
-        result = search_tool.invoke({
-            "faiss_index": state["db"],
-            "query": search_query,
-            "chunks": state["chunks"],
-            "api_key": state.api_key,
-            "embedding_model": state.embedding_model,
-            "k": 5
-        })
+        logging.info(f"🔍 Agent Verify: Đã tạo chiến lược tìm kiếm - {search_strategy['reasoning']}")
         
-        if not result["entities"]["results"]:
-            logging.warning("⚠️ Agent Verify: Không tìm thấy kết quả phù hợp, thử lại với câu hỏi gốc")
-            # Fallback về câu hỏi gốc nếu tìm bằng summary không có kết quả
+        all_results = []
+        for query_info in search_strategy["queries"]:
+            logging.info(f"🔍 Thực hiện tìm kiếm: {query_info['focus']}")
+            
             result = search_tool.invoke({
                 "faiss_index": state["db"],
-                "query": state["question"],
+                "query": query_info["query"],
                 "chunks": state["chunks"],
                 "api_key": state.api_key,
                 "embedding_model": state.embedding_model,
-                "k": 5
+                "k": query_info["expected_chunks"]
             })
+            
+            if result["entities"]["results"]:
+                all_results.extend(zip(
+                    result["entities"]["results"],
+                    result["entities"]["scores"]
+                ))
         
-        logging.info("✓ Agent Verify: Đã tìm kiếm xong với search tool")
+        # Sắp xếp và lọc kết quả trùng lặp
+        all_results.sort(key=lambda x: x[1], reverse=True)
+        unique_results = []
+        seen_texts = set()
         
-        # Xử lý kết quả tìm kiếm với ngưỡng thấp hơn cho summary-only mode
-        if not result["entities"]["results"]:
+        for text, score in all_results:
+            if text not in seen_texts:
+                unique_results.append((text, score))
+                seen_texts.add(text)
+        
+        if not unique_results:
             if summary_only_mode:
                 logging.warning("⚠️ Summary-only mode: Không có kết quả search, tiếp tục với verified_data từ entities")
-                # Trong summary-only mode, chấp nhận entities hiện có
                 verified_data = {
                     "verified_entities": state["entities"],
                     "confidence": "low", 
@@ -760,7 +835,7 @@ def verified_agent(state: AgentState) -> AgentState:
                 return {
                     "verified_data": verified_data,
                     "retry_count_verify": retry_count + 1,
-                    "messages": [],  # Clear messages
+                    "messages": [],
                     "error": None
                 }
             else:
@@ -770,9 +845,9 @@ def verified_agent(state: AgentState) -> AgentState:
                     "retry_count_verify": retry_count + 1,
                     "messages": [{"to": "agent_analyze", "action": "reanalyze"}]
                 }
-            
-        # Lấy score trung bình của kết quả
-        avg_score = sum(result["entities"]["scores"]) / len(result["entities"]["scores"])
+        
+        # Tính điểm trung bình của các kết quả unique
+        avg_score = sum(score for _, score in unique_results) / len(unique_results)
         
         # Điều chỉnh ngưỡng score dựa trên mode
         min_score = 0.2 if summary_only_mode else 0.3
@@ -795,8 +870,8 @@ def verified_agent(state: AgentState) -> AgentState:
             question=state["question"],
             summary=state["summary"],
             search_entities=str({
-                "results": result["entities"]["results"],
-                "scores": result["entities"]["scores"]
+                "results": [text for text, _ in unique_results],
+                "scores": [score for _, score in unique_results]
             }),
             analysis_entities=str(state["entities"])
         ))
@@ -806,7 +881,6 @@ def verified_agent(state: AgentState) -> AgentState:
             parsed = json.loads(response.content)
         except json.JSONDecodeError:
             logging.warning("❌ Agent Verify: Không thể parse kết quả từ LLM, tạo fallback response")
-            # Fallback verification cho summary-only mode
             if summary_only_mode:
                 parsed = {
                     "verified": True,
@@ -826,11 +900,8 @@ def verified_agent(state: AgentState) -> AgentState:
         
         if parsed["verified"]:
             # Tính số lượng entities từ mỗi nguồn
-            search_entities = result.get("entities", {})
-            analysis_entities = state.get("entities", {})
-            
-            search_count = len(search_entities.get("results", []))
-            analysis_count = sum(len(entities) for entities in analysis_entities.values())
+            search_count = len(unique_results)
+            analysis_count = sum(len(entities) for entities in state["entities"].values())
             
             mode_info = f" (summary-only mode)" if summary_only_mode else ""
             
@@ -838,12 +909,13 @@ def verified_agent(state: AgentState) -> AgentState:
             - Entities từ search: {search_count} items (avg score: {avg_score:.3f})
             - Entities từ analysis: {analysis_count} items
             - Verified data: {len(parsed.get('verified_data', {}))} items
-            - Categories: {', '.join(parsed.get('verified_data', {}).keys())}""")
+            - Categories: {', '.join(parsed.get('verified_data', {}).keys())}
+            - Search strategy: {search_strategy['reasoning']}""")
             
             return {
                 "verified_data": parsed["verified_data"],
                 "retry_count_verify": retry_count + 1,
-                "messages": [],  # Clear messages
+                "messages": [],
                 "error": None
             }
         else:
