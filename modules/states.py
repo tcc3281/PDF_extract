@@ -23,11 +23,16 @@ class AgentState:
     retry_count_a1: int = 0
     retry_count_a2: int = 0
     retry_count_analyze: int = 0
+    retry_count_verify: int = 0
+    retry_count_aggregate: int = 0
     
     # Model configurations
     api_key: Optional[str] = None
     model_name: Optional[str] = None
     embedding_model: Optional[str] = None
+    
+    # Special modes
+    summary_only_mode: Optional[bool] = None
 
     def __post_init__(self):
         if self.chunks is None:

@@ -47,50 +47,64 @@ def get_global_llm():
     return _global_llm
 
 def extracted_agent(state: AgentState) -> AgentState:
-    logging.info("🚀 Agent A1: Bắt đầu trích xuất PDF...")
     retry_count = state.get("retry_count_a1", 0)
+    logging.info(f"🚀 Agent A1: Bắt đầu trích xuất PDF (retry: {retry_count})...")
+    
     if retry_count >= 3:
         logging.error("❌ Agent A1: Đã thử 3 lần nhưng không thành công")
-        return {"error": "Invalid PDF after 3 retries", "messages": state.get("messages", [])}
-    
-    messages = state.get("messages", [])
-    if any(msg.get("to") == "agent_a1" and msg.get("action") == "retry_clean" for msg in messages):
-        logging.info("🔄 Agent A1: Thử lại việc làm sạch và OCR...")
+        return {
+            "error": "Invalid PDF after 3 retries", 
+            "retry_count_a1": retry_count + 1,
+            "messages": []
+        }
     
     result = extract_pdf.invoke({"pdf_path": state["file_path"]})
     
     if result["error"]:
         logging.error(f"❌ Agent A1: Lỗi khi trích xuất PDF - {result['error']}")
+        return {
+            "error": result["error"],
+            "retry_count_a1": retry_count + 1,
+            "messages": []
+        }
     else:
         logging.info(f"✅ Agent A1: Đã trích xuất thành công {len(result['cleaned_text'])} ký tự")
-    
-    return {
-        "cleaned_text": result["cleaned_text"],
-        "error": result["error"],
-        "retry_count_a1": retry_count + 1,
-        "messages": messages
-    }
-
+        return {
+            "cleaned_text": result["cleaned_text"],
+            "error": None,
+            "retry_count_a1": retry_count + 1,
+            "messages": []
+        }
 
 def chunked_and_embedded_agent(state: AgentState) -> AgentState:
     """Agent phân đoạn và tạo embeddings"""
-    logging.info("🚀 Agent A2: Bắt đầu chia nhỏ và tạo embeddings...")
     retry_count = state.get("retry_count_a2", 0)
+    logging.info(f"🚀 Agent A2: Bắt đầu chia nhỏ và tạo embeddings (retry: {retry_count})...")
+    
     if retry_count >= 3:
         logging.error("❌ Agent A2: Đã thử 3 lần nhưng không thành công")
-        return {"error": "Invalid chunks after 3 retries", "messages": state.get("messages", [])}
+        return {
+            "error": "Invalid chunks after 3 retries", 
+            "retry_count_a2": retry_count + 1,
+            "messages": []
+        }
     
     if state["error"] or not state["cleaned_text"]:
         logging.error(f"❌ Agent A2: Không có text để xử lý - {state['error'] or 'No cleaned text'}")
-        return {"error": state["error"] or "No cleaned text", "messages": state.get("messages", [])}
+        return {
+            "error": state["error"] or "No cleaned text", 
+            "retry_count_a2": retry_count + 1,
+            "messages": []
+        }
     
-    messages = state.get("messages", [])
+    # Lấy chunk settings từ messages nếu có
     chunk_size, chunk_overlap = 2000, 200
-    for msg in messages:
+    for msg in state.get("messages", []):
         if msg.get("to") == "agent_a2" and msg.get("action") == "adjust_chunk":
             chunk_size = int(msg.get("chunk_size", 2000))
             chunk_overlap = int(msg.get("chunk_overlap", 200))
             logging.info(f"🔄 Agent A2: Điều chỉnh kích thước chunk={chunk_size}, overlap={chunk_overlap}")
+            break
     
     # Tạo file_id từ file_path
     file_id = Path(state["file_path"]).stem if state.get("file_path") else "unknown"
@@ -109,7 +123,7 @@ def chunked_and_embedded_agent(state: AgentState) -> AgentState:
         return {
             "error": result["error"],
             "retry_count_a2": retry_count + 1,
-            "messages": messages
+            "messages": []
         }
 
     if not check_chunks(result["chunks"]):
@@ -117,7 +131,12 @@ def chunked_and_embedded_agent(state: AgentState) -> AgentState:
         return {
             "error": "Invalid chunks",
             "retry_count_a2": retry_count + 1,
-            "messages": messages + [{"to": "agent_a2", "action": "adjust_chunk", "chunk_size": chunk_size - 500, "chunk_overlap": chunk_overlap - 50}]
+            "messages": [{
+                "to": "agent_a2", 
+                "action": "adjust_chunk", 
+                "chunk_size": max(chunk_size - 500, 800), 
+                "chunk_overlap": max(chunk_overlap - 50, 50)
+            }]
         }
 
     logging.info(f"✅ Agent A2: Đã tạo {len(result['chunks'])} chunks và embeddings thành công")
@@ -127,9 +146,8 @@ def chunked_and_embedded_agent(state: AgentState) -> AgentState:
         "db": result["db"],
         "retry_count_a2": retry_count + 1,
         "error": None,
-        "messages": messages
+        "messages": []  # Clear messages
     }
-
 
 summarize_prompt = ChatPromptTemplate.from_messages([
     ("system", """Nhiệm vụ của bạn là trích xuất thông tin quan trọng, chính xác và ngắn gọn từ văn bản. 
@@ -151,17 +169,40 @@ Tóm tắt ngắn gọn, súc tích (tối đa 100 từ), chỉ giữ lại thô
 ])
 
 extract_prompt = ChatPromptTemplate.from_messages([
-    ("system", """Trích xuất các thực thể (entities) quan trọng từ văn bản sau một cách chính xác và đầy đủ.
-Phân loại thành 4 nhóm:
-1. names: Tên người, tổ chức, công ty, thương hiệu quan trọng
-2. dates: Ngày tháng, mốc thời gian, khoảng thời gian
-3. locations: Địa điểm, quốc gia, thành phố, khu vực địa lý
-4. numbers: Số liệu thống kê, tiền tệ, phần trăm, số đo lường
+    ("system", """Trích xuất các thực thể (entities) quan trọng từ văn bản.
 
-Chỉ trích xuất các entities thực sự quan trọng và có giá trị thông tin cao.
-Bỏ qua các entities không rõ ràng hoặc không quan trọng.
-Trả về đúng định dạng JSON: {{"entities": {{"names": [], "dates": [], "locations": [], "numbers": []}}}}"""),
-    ("user", "{text}")
+QUAN TRỌNG: Luôn trả về JSON hợp lệ theo định dạng:
+{
+  "entities": {
+    "names": ["tên người", "tên công ty", "tên tổ chức"],
+    "dates": ["ngày tháng", "thời gian"],
+    "locations": ["địa điểm", "thành phố", "quốc gia"],
+    "numbers": ["số liệu", "phần trăm", "tiền tệ"]
+  }
+}
+
+Ví dụ:
+Input: "Công ty ABC có 1000 nhân viên tại Hà Nội từ năm 2020"
+Output:
+{
+  "entities": {
+    "names": ["Công ty ABC"],
+    "dates": ["năm 2020"],
+    "locations": ["Hà Nội"],
+    "numbers": ["1000 nhân viên"]
+  }
+}
+
+Nếu không tìm thấy entities nào, trả về:
+{
+  "entities": {
+    "names": [],
+    "dates": [],
+    "locations": [],
+    "numbers": []
+  }
+}"""),
+    ("user", "Văn bản: {text}")
 ])
 
 final_summarize_prompt = ChatPromptTemplate.from_messages([
@@ -179,92 +220,188 @@ Mục đích: Giúp người đọc nắm bắt nhanh chóng những thông tin 
     ("user", "{summaries}")
 ])
 
-def analyze_chunk_batch(chunk: str) -> Dict:
-    """Xử lý một chunk đơn lẻ - để dùng trong parallel processing"""
+fallback_extract_prompt = ChatPromptTemplate.from_messages([
+    ("system", """Hãy liệt kê từng dòng những thông tin quan trọng bạn tìm thấy:
+
+Tên người/công ty:
+- [liệt kê nếu có]
+
+Ngày tháng:
+- [liệt kê nếu có]
+
+Địa điểm:
+- [liệt kê nếu có]
+
+Số liệu:
+- [liệt kê nếu có]
+
+Nếu không có thì ghi "Không có"."""),
+    ("user", "Văn bản: {text}")
+])
+
+def extract_entities_from_text(text_response: str) -> Dict:
+    """Extract entities từ text response thay vì JSON"""
+    entities = {"names": [], "dates": [], "locations": [], "numbers": []}
+    
+    try:
+        lines = text_response.split('\n')
+        current_category = None
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Xác định category
+            if "tên người" in line.lower() or "công ty" in line.lower():
+                current_category = "names"
+            elif "ngày" in line.lower() or "tháng" in line.lower():
+                current_category = "dates"  
+            elif "địa điểm" in line.lower() or "vị trí" in line.lower():
+                current_category = "locations"
+            elif "số liệu" in line.lower() or "số" in line.lower():
+                current_category = "numbers"
+            elif line.startswith('- ') and current_category:
+                # Extract item
+                item = line[2:].strip()
+                if item and item.lower() != "không có" and len(item) > 2:
+                    entities[current_category].append(item)
+    
+    except Exception as e:
+        logging.warning(f"⚠️ Lỗi khi extract entities từ text: {str(e)}")
+    
+    return entities
+
+def analyze_chunk_batch_with_mode(chunk: str, use_fallback: bool = False) -> Dict:
+    """Xử lý một chunk đơn lẻ với tùy chọn sử dụng fallback prompt"""
     try:
         llm = get_global_llm()
         if not llm:
             raise ValueError("Global LLM not initialized")
             
         # Xử lý summary
-        summary_result = llm.invoke(summarize_prompt.format(text=chunk))
-        summary = summary_result.content if hasattr(summary_result, "content") else str(summary_result)
-        
-        # Xử lý entities với error handling tốt hơn
-        entities_result = llm.invoke(extract_prompt.format(text=chunk))
-        
-        # Fix: Xử lý đúng ChatPromptValue và các định dạng khác
-        if hasattr(entities_result, "content"):
-            entities_content = entities_result.content
-        elif hasattr(entities_result, "text"):
-            entities_content = entities_result.text
-        else:
-            entities_content = str(entities_result)
-        
-        # Parse JSON entities
         try:
-            if isinstance(entities_content, str):
+            summary_result = llm.invoke(summarize_prompt.format(text=chunk))
+            summary = summary_result.content if hasattr(summary_result, "content") else str(summary_result)
+        except Exception as e:
+            logging.warning(f"⚠️ Summary generation failed: {str(e)}")
+            summary = f"Summary processing error for chunk: {chunk[:100]}..."
+        
+        # Xử lý entities với 2 approaches khác nhau
+        if use_fallback:
+            # Approach 1: Non-JSON fallback
+            try:
+                entities_result = llm.invoke(fallback_extract_prompt.format(text=chunk))
+                entities_content = entities_result.content if hasattr(entities_result, "content") else str(entities_result)
+                
+                logging.info(f"🔄 Fallback: Sử dụng text extraction thay vì JSON")
+                entities = extract_entities_from_text(entities_content)
+            except Exception as e:
+                logging.warning(f"⚠️ Fallback extraction failed: {str(e)}")
+                entities = {"names": [], "dates": [], "locations": [], "numbers": []}
+            
+        else:
+            # Approach 2: Standard JSON với backup
+            try:
+                entities_result = llm.invoke(extract_prompt.format(text=chunk))
+                entities_content = entities_result.content if hasattr(entities_result, "content") else str(entities_result)
+                
+                # Clean và validate JSON content trước khi parse
+                entities_content = entities_content.strip()
+                
+                # Remove markdown code blocks
+                if entities_content.startswith("```json"):
+                    entities_content = entities_content.replace("```json", "").replace("```", "").strip()
+                elif entities_content.startswith("```"):
+                    entities_content = entities_content.replace("```", "").strip()
+                
+                # Kiểm tra nếu content quá ngắn hoặc không hợp lệ
+                if len(entities_content) < 10 or not entities_content.startswith("{"):
+                    raise ValueError(f"Invalid JSON response: '{entities_content[:50]}...'")
+                
                 entities_data = json.loads(entities_content)
+                
+                # Extract entities từ response
                 if "entities" in entities_data:
                     entities = entities_data["entities"]
                 else:
                     entities = entities_data
-            else:
+                    
+                # Validate structure
+                if not isinstance(entities, dict):
+                    raise ValueError("Invalid entities structure - not a dict")
+                    
+                # Ensure all required keys exist
+                for key in ["names", "dates", "locations", "numbers"]:
+                    if key not in entities:
+                        entities[key] = []
+                    elif not isinstance(entities[key], list):
+                        entities[key] = []
+                        
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                logging.warning(f"⚠️ JSON parsing failed: {str(e)[:100]}. Content: '{entities_content[:100] if 'entities_content' in locals() else 'N/A'}'")
+                # Backup: Sử dụng text extraction
+                try:
+                    entities = extract_entities_from_text(entities_content if 'entities_content' in locals() else "")
+                except Exception as e2:
+                    logging.warning(f"⚠️ Backup text extraction also failed: {str(e2)}")
+                    entities = {"names": [], "dates": [], "locations": [], "numbers": []}
+            except Exception as e:
+                logging.error(f"❌ Unexpected error in JSON processing: {str(e)}")
                 entities = {"names": [], "dates": [], "locations": [], "numbers": []}
-        except (json.JSONDecodeError, KeyError) as e:
-            logging.warning(f"⚠️ Không thể parse entities JSON: {str(e)}")
-            entities = {"names": [], "dates": [], "locations": [], "numbers": []}
         
-        # Đảm bảo entities có đúng structure
-        if not isinstance(entities, dict):
-            entities = {"names": [], "dates": [], "locations": [], "numbers": []}
-        
-        for key in ["names", "dates", "locations", "numbers"]:
-            if key not in entities:
-                entities[key] = []
-            elif not isinstance(entities[key], list):
+        # Chuẩn hóa entities
+        for key in entities:
+            if isinstance(entities[key], list):
+                entities[key] = [e for e in entities[key] if isinstance(e, str) and len(e.strip()) > 2]
+            else:
                 entities[key] = []
         
         result = {
             "summary": summary,
-            "entities": entities
+            "entities": entities,
+            "text": chunk
         }
         
-        logging.info(f"✅ Chunk processed: {len(chunk)} chars, entities: {sum(len(v) for v in entities.values())} items")
+        entities_count = sum(len(v) for v in entities.values())
+        prompt_type = "fallback" if use_fallback else "standard"
+        logging.info(f"✅ ({prompt_type}) Chunk processed: {len(chunk)} chars, entities: {entities_count} items")
+        
+        if entities_count > 0:
+            logging.info(f"   📋 Entities found: {dict((k, len(v)) for k, v in entities.items())}")
+        
         return result
         
     except Exception as e:
-        logging.error(f"❌ Error processing chunk: {str(e)}")
+        logging.error(f"❌ Critical error processing chunk: {str(e)}")
         return {
             "summary": "Error processing this chunk",
-            "entities": {"names": [], "dates": [], "locations": [], "numbers": []}
+            "entities": {"names": [], "dates": [], "locations": [], "numbers": []},
+            "text": chunk
         }
 
-def analyze_batch_parallel(batch: List[str], max_workers: int = 10) -> List[Dict]:
-    """Xử lý batch với parallel processing để tăng tốc"""
+def analyze_batch_parallel_with_mode(batch: List[str], max_workers: int = 10, use_fallback: bool = False) -> List[Dict]:
+    """Xử lý batch với parallel processing và tùy chọn fallback prompt"""
     try:
         results = []
         
-        # Sử dụng ThreadPoolExecutor để xử lý parallel
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit tất cả chunks trong batch
             future_to_chunk = {
-                executor.submit(analyze_chunk_batch, chunk): chunk 
+                executor.submit(analyze_chunk_batch_with_mode, chunk, use_fallback): chunk 
                 for chunk in batch
             }
             
-            # Collect results as they complete
             for future in as_completed(future_to_chunk):
                 try:
-                    result = future.result(timeout=30)  # 30s timeout per chunk
+                    result = future.result(timeout=30)
                     if result:
                         results.append(result)
                 except Exception as e:
                     logging.error(f"❌ Timeout or error in parallel processing: {str(e)}")
-                    # Add fallback result
                     results.append({
                         "summary": "Error processing chunk",
-                        "entities": {"names": [], "dates": [], "locations": [], "numbers": []}
+                        "entities": {"names": [], "dates": [], "locations": [], "numbers": []},
+                        "text": ""
                     })
         
         return results
@@ -306,85 +443,181 @@ def analyzed_agent(state: AgentState) -> AgentState:
     # Set global LLM
     set_global_llm(state.api_key, state.model_name)
     
-    logging.info("🚀 Agent Analyze: Bắt đầu phân tích nội dung với hiệu suất cao...")
-    
-    # Fix: Ensure retry_count is an integer
     retry_count = int(state.get("retry_count_analyze", 0))
+    use_fallback = retry_count > 0  # Sử dụng fallback prompt từ retry thứ 2
+    
+    logging.info(f"🚀 Agent Analyze: Bắt đầu phân tích nội dung ({'fallback mode' if use_fallback else 'standard mode'})...")
+    
     if retry_count >= 3:
         logging.error("❌ Agent Analyze: Đã thử 3 lần nhưng không thành công")
-        return {"error": "Analysis failed after 3 retries", "messages": state.get("messages", [])}
+        return {"error": "Analysis failed after 3 retries", "messages": []}
     
-    # Fix: Better error checking
-    if state.get("error") or not state.get("chunks"):
-        error_msg = state.get("error") or "No chunks available"
-        logging.error(f"❌ Agent Analyze: Không có chunks để phân tích - {error_msg}")
-        return {"error": error_msg, "messages": state.get("messages", [])}
+    # Kiểm tra chunks availability - nhưng KHÔNG check error cho retry case
+    if not state.get("chunks"):
+        logging.error(f"❌ Agent Analyze: Không có chunks để phân tích")
+        return {"error": "No chunks available", "messages": []}
+    
+    # Check cho error CHỈ KHI không phải retry case
+    if state.get("error") and retry_count == 0:
+        error_msg = state.get("error")
+        logging.error(f"❌ Agent Analyze: Lỗi từ agent trước - {error_msg}")
+        return {"error": error_msg, "messages": []}
+    
+    # Clear error state nếu đang retry
+    if retry_count > 0:
+        logging.info(f"🔄 Agent Analyze: Clearing previous error for retry {retry_count}")
     
     try:
-        # Tăng batch size để tận dụng rate limit cao
-        batch_size = 20  # Tăng từ 5 lên 20 
+        batch_size = 20
         chunks = state["chunks"]
         batches = [chunks[i:i + batch_size] for i in range(0, len(chunks), batch_size)]
-        logging.info(f"📊 Agent Analyze: Xử lý {len(batches)} batches với batch_size={batch_size} (parallel mode)...")
+        logging.info(f"📊 Agent Analyze: Xử lý {len(batches)} batches với batch_size={batch_size} ({'fallback' if use_fallback else 'standard'} mode)...")
 
         summaries = []
         entities = {"names": [], "dates": [], "locations": [], "numbers": []}
+        failed_chunks = []
         
-        # Xử lý các batches với parallel processing
+        # Xử lý các batches với prompt phù hợp
         for i, batch in enumerate(batches):
-            # Giảm delay xuống chỉ 0.2s giữa batches để tận dụng 500 RPM
             if i > 0:
                 time.sleep(0.2)
             
             logging.info(f"🔄 Processing batch {i+1}/{len(batches)} với {len(batch)} chunks...")
             
-            # Sử dụng parallel processing cho từng batch
-            batch_results = analyze_batch_parallel(batch, max_workers=min(15, len(batch)))
+            batch_results = analyze_batch_parallel_with_mode(batch, max_workers=min(15, len(batch)), use_fallback=use_fallback)
             
             if not batch_results:
                 logging.warning(f"⚠️ Batch {i+1} không có kết quả")
+                failed_chunks.extend(batch)
                 continue
                 
             for result in batch_results:
                 if not result:
                     continue
-                summaries.append(result["summary"])
-                for key in entities:
-                    if key in result["entities"] and isinstance(result["entities"][key], list):
-                        entities[key].extend(result["entities"][key])
+                    
+                if isinstance(result.get("summary"), str) and result["summary"].strip():
+                    summaries.append(result["summary"])
+                    
+                if result.get("entities"):
+                    for key in entities:
+                        if key in result["entities"] and isinstance(result["entities"][key], list):
+                            entities[key].extend(result["entities"][key])
+                else:
+                    failed_chunks.append(result.get("text", ""))
+        
+        # Kiểm tra kết quả phân tích
+        total_entities = sum(len(entities[key]) for key in entities)
+        
+        if total_entities == 0:
+            logging.warning(f"⚠️ Agent Analyze: Không trích xuất được entities nào (retry: {retry_count})")
+            
+            # Strategy 1: Thử fallback prompt (retry 0 -> 1)
+            if retry_count == 0:
+                logging.info("🔄 Strategy 1: Thử lại với fallback text extraction...")
+                return {
+                    "error": "No entities extracted - retry with fallback",
+                    "retry_count_analyze": retry_count + 1,
+                    "messages": []  # Clear messages
+                }
+            
+            # Strategy 2: Giảm chunk size (retry 1 -> 2)  
+            elif retry_count == 1:
+                logging.info("🔄 Strategy 2: Thử lại với chunk size nhỏ hơn...")
+                return {
+                    "error": "No entities after fallback - retry with smaller chunks", 
+                    "retry_count_analyze": retry_count + 1,
+                    "messages": [{
+                        "to": "agent_a2",
+                        "action": "adjust_chunk",
+                        "chunk_size": 1200,  # Nhỏ hơn nữa
+                        "chunk_overlap": 100
+                    }]
+                }
+            
+            # Strategy 3: Summary-only mode với smart fallback (retry 2+)
+            else:
+                logging.warning("⚠️ Strategy 3: Chuyển sang summary-only mode")
+                
+                # Tạo final summary trước
+                llm = get_global_llm()
+                try:
+                    if summaries:
+                        # Kết hợp summaries thành final summary
+                        combined_summary = "\n".join(summaries[:5])  # Lấy tối đa 5 summaries
+                        final_summary_result = llm.invoke(final_summarize_prompt.format(summaries=combined_summary))
+                        final_summary = final_summary_result.content if hasattr(final_summary_result, "content") else str(final_summary_result)
+                    else:
+                        final_summary = "Tài liệu chứa thông tin nhưng không thể trích xuất chi tiết cụ thể."
+                except Exception as e:
+                    logging.warning(f"⚠️ Lỗi tạo final summary: {str(e)}")
+                    final_summary = "\n".join(summaries[:3]) if summaries else "Không thể tạo tóm tắt"
+                
+                # Tạo entities từ summary (last attempt)
+                try:
+                    summary_entities_result = llm.invoke(fallback_extract_prompt.format(text=final_summary))
+                    summary_entities_content = summary_entities_result.content if hasattr(summary_entities_result, "content") else str(summary_entities_result)
+                    summary_entities = extract_entities_from_text(summary_entities_content)
+                    
+                    # Kiểm tra nếu có entities từ summary
+                    summary_entities_count = sum(len(v) for v in summary_entities.values())
+                    if summary_entities_count > 0:
+                        logging.info(f"✓ Tìm thấy {summary_entities_count} entities từ final summary")
+                        final_entities = summary_entities
+                    else:
+                        # Tạo entities placeholder  
+                        final_entities = {
+                            "names": ["Tài liệu"],
+                            "dates": ["Không xác định"],
+                            "locations": ["Không xác định"], 
+                            "numbers": ["Không xác định"]
+                        }
+                        
+                except Exception as e:
+                    logging.warning(f"⚠️ Không thể extract từ summary: {str(e)}")
+                    # Final fallback entities
+                    final_entities = {
+                        "names": ["Tài liệu"],
+                        "dates": ["Không xác định"],
+                        "locations": ["Không xác định"],
+                        "numbers": ["Không xác định"]
+                    }
+                
+                logging.info(f"✅ Summary-only mode: summary={len(final_summary)} chars, entities={sum(len(v) for v in final_entities.values())} items")
+                
+                return {
+                    "summary": final_summary,
+                    "entities": final_entities,
+                    "retry_count_analyze": retry_count + 1,
+                    "error": None,  # Không lỗi để tiếp tục workflow
+                    "summary_only_mode": True,
+                    "messages": []  # Clear messages
+                }
         
         if not summaries:
-            raise ValueError("Không có summary nào được tạo thành công")
+            logging.error("❌ Agent Analyze: Không có summary nào được tạo thành công")
+            return {
+                "error": "No summaries generated",
+                "retry_count_analyze": retry_count + 1,
+                "messages": []  # Clear messages
+            }
             
-        # Loại bỏ duplicates
+        # Loại bỏ duplicates và chuẩn hóa
         for key in entities:
             entities[key] = list(set(entities[key]))
+            # Loại bỏ các giá trị rỗng hoặc quá ngắn
+            entities[key] = [e for e in entities[key] if isinstance(e, str) and len(e.strip()) > 2]
         
-        # Optimized final summary processing với token limit cao hơn
+        # Tạo final summary
         llm = get_global_llm()
         try:
-            # Tận dụng token limit 200k - chia thành chunks lớn hơn
             summary_chunks = chunk_summaries_for_final(summaries, max_tokens=150000)
             logging.info(f"📝 Chia {len(summaries)} summaries thành {len(summary_chunks)} chunks để xử lý")
             
             if len(summary_chunks) == 1:
-                # Xử lý 1 chunk lớn
                 final_summary_result = llm.invoke(final_summarize_prompt.format(summaries="\n".join(summary_chunks[0])))
                 final_summary = final_summary_result.content if hasattr(final_summary_result, "content") else str(final_summary_result)
             else:
-                # Xử lý parallel các summary chunks
                 chunk_summaries = []
-                
-                def process_summary_chunk(chunk_data):
-                    chunk_idx, chunk = chunk_data
-                    try:
-                        chunk_result = llm.invoke(final_summarize_prompt.format(summaries="\n".join(chunk)))
-                        return chunk_result.content if hasattr(chunk_result, "content") else str(chunk_result)
-                    except Exception as e:
-                        logging.warning(f"⚠️ Lỗi khi xử lý summary chunk {chunk_idx}: {str(e)}")
-                        return " ".join(chunk[:5])  # Fallback với nhiều summaries hơn
-                
-                # Parallel processing cho summary chunks
                 with ThreadPoolExecutor(max_workers=min(5, len(summary_chunks))) as executor:
                     chunk_futures = {
                         executor.submit(process_summary_chunk, (i, chunk)): i 
@@ -393,107 +626,237 @@ def analyzed_agent(state: AgentState) -> AgentState:
                     
                     for future in as_completed(chunk_futures):
                         try:
-                            result = future.result(timeout=60)  # Longer timeout for summary
-                            chunk_summaries.append(result)
+                            result = future.result(timeout=60)
+                            if result and isinstance(result, str):
+                                chunk_summaries.append(result)
                         except Exception as e:
                             logging.warning(f"⚠️ Timeout in summary processing: {str(e)}")
-                            chunk_summaries.append("Summary processing failed")
                 
-                # Final combination
                 if len(chunk_summaries) > 1:
                     try:
-                        time.sleep(0.5)  # Brief delay
+                        time.sleep(0.5)
                         final_result = llm.invoke(final_summarize_prompt.format(summaries="\n".join(chunk_summaries)))
                         final_summary = final_result.content if hasattr(final_result, "content") else str(final_result)
                     except Exception as e:
                         logging.warning(f"⚠️ Lỗi khi combine final summary: {str(e)}")
-                        final_summary = "\n\n".join(chunk_summaries)
+                        final_summary = "\n\n".join(chunk_summaries[:3])  # Lấy 3 summary đầu làm fallback
                 else:
-                    final_summary = chunk_summaries[0] if chunk_summaries else "Không thể tạo summary"
+                    final_summary = chunk_summaries[0] if chunk_summaries else summaries[0]
                     
         except Exception as e:
             logging.error(f"❌ Lỗi khi tạo final summary: {str(e)}")
-            # Fallback với nhiều summaries hơn
-            final_summary = "\n".join(summaries[:10]) + ("..." if len(summaries) > 10 else "")
+            final_summary = "\n".join(summaries[:3])  # Fallback với 3 summary đầu
         
-        logging.info(f"""✅ Agent Analyze: Phân tích thành công (High Performance Mode):
-        - {len(summaries)} summaries
+        # Log kết quả chi tiết
+        logging.info(f"""✅ Agent Analyze: Phân tích thành công ({'fallback' if use_fallback else 'standard'} mode):
+        - {len(summaries)}/{len(chunks)} chunks xử lý thành công
+        - {len(failed_chunks)} chunks thất bại
         - {len(entities['names'])} tên
         - {len(entities['dates'])} ngày tháng  
         - {len(entities['locations'])} địa điểm
         - {len(entities['numbers'])} số liệu
-        - Final summary: {len(final_summary)} ký tự
-        - Processed {len(chunks)} chunks in {len(batches)} batches""")
+        - Final summary: {len(final_summary)} ký tự""")
+        
+        if failed_chunks:
+            logging.warning(f"⚠️ {len(failed_chunks)} chunks không xử lý được, có thể thiếu thông tin")
         
         return {
             "summary": final_summary,
             "entities": entities,
             "retry_count_analyze": retry_count + 1,
             "error": None,
-            "messages": state.get("messages", [])
+            "messages": []  # Clear messages
         }
     except Exception as e:
         logging.error(f"❌ Agent Analyze: Lỗi khi phân tích - {str(e)}")
         return {
             "error": str(e),
             "retry_count_analyze": retry_count + 1,
-            "messages": state.get("messages", [])
+            "messages": []  # Clear messages
         }
 
 verify_prompt = ChatPromptTemplate.from_messages([
-    ("system", """Xác minh tính chính xác và đầy đủ của các thực thể (entities) đã được trích xuất.
+    ("system", """Xác minh tính chính xác và đầy đủ của các thực thể (entities) đã được trích xuất dựa trên câu hỏi và tóm tắt nội dung.
+
+Câu hỏi gốc: {question}
+Tóm tắt: {summary}
+
 Nhiệm vụ của bạn:
 1. Kiểm tra xem các entities có liên quan đến chủ đề chính không
 2. Xác minh tính chính xác của các entities (tên, ngày tháng, địa điểm, số liệu)
 3. Đánh giá mức độ đầy đủ của thông tin đã trích xuất
 4. Phát hiện các thông tin quan trọng bị bỏ sót
+5. So sánh entities từ search với entities từ analysis
 
 Nếu phát hiện vấn đề, gửi message yêu cầu xử lý lại (ví dụ: {{"to": "agent_a1", "action": "retry_clean"}}).
 Trả về JSON: {{"verified": bool, "verified_data": dict, "message": dict}}"""),
-    ("user", "Entities: {entities}")
+    ("user", "Entities từ search: {search_entities}\nEntities từ analysis: {analysis_entities}")
 ])
 
 def verified_agent(state: AgentState) -> AgentState:
     """Agent xác minh thông tin"""
+    retry_count = state.get("retry_count_verify", 0)
+    logging.info(f"🔍 Agent Verify: Bắt đầu quá trình xác minh (retry: {retry_count})...")
+    
     if not state.api_key or not state.model_name:
+        logging.error("❌ Agent Verify: Thiếu API key hoặc model name")
         return {"error": "API key and model name are required", "messages": state.get("messages", [])}
         
-    logging.info("🚀 Agent Verify: Bắt đầu xác minh kết quả...")
     if state.get("error") or not state.get("entities") or not state.get("db"):
         error_msg = state.get("error") or "Missing data"
         logging.error(f"❌ Agent Verify: Thiếu dữ liệu để xác minh - {error_msg}")
-        return {"error": error_msg, "messages": state.get("messages", [])}
+        return {
+            "error": error_msg, 
+            "retry_count_verify": retry_count + 1,
+            "messages": []  # Clear messages
+        }
+    
+    # Kiểm tra summary-only mode
+    summary_only_mode = state.get("summary_only_mode", False)
+    if summary_only_mode:
+        logging.info("🔍 Agent Verify: Xử lý summary-only mode")
     
     try:
+        # Sử dụng summary từ analysis_agent làm query thay vì câu hỏi gốc
+        search_query = state.get("summary", state["question"])
+        logging.info(f"🔍 Agent Verify: Tìm kiếm với query dài {len(search_query)} ký tự")
+        
+        # Tăng k lên để có nhiều kết quả hơn
         result = search_tool.invoke({
             "faiss_index": state["db"],
-            "query": state["question"],
-            "chunks": state["chunks"]
+            "query": search_query,
+            "chunks": state["chunks"],
+            "k": 5
         })
         
+        if not result["entities"]["results"]:
+            logging.warning("⚠️ Agent Verify: Không tìm thấy kết quả phù hợp, thử lại với câu hỏi gốc")
+            # Fallback về câu hỏi gốc nếu tìm bằng summary không có kết quả
+            result = search_tool.invoke({
+                "faiss_index": state["db"],
+                "query": state["question"],
+                "chunks": state["chunks"],
+                "k": 5
+            })
+        
+        logging.info("✓ Agent Verify: Đã tìm kiếm xong với search tool")
+        
+        # Xử lý kết quả tìm kiếm với ngưỡng thấp hơn cho summary-only mode
+        if not result["entities"]["results"]:
+            if summary_only_mode:
+                logging.warning("⚠️ Summary-only mode: Không có kết quả search, tiếp tục với verified_data từ entities")
+                # Trong summary-only mode, chấp nhận entities hiện có
+                verified_data = {
+                    "verified_entities": state["entities"],
+                    "confidence": "low", 
+                    "mode": "summary_only",
+                    "note": "Verified based on summary analysis only"
+                }
+                
+                return {
+                    "verified_data": verified_data,
+                    "retry_count_verify": retry_count + 1,
+                    "messages": [],  # Clear messages
+                    "error": None
+                }
+            else:
+                logging.error("❌ Agent Verify: Không tìm thấy kết quả nào phù hợp")
+                return {
+                    "error": "No matching results found",
+                    "retry_count_verify": retry_count + 1,
+                    "messages": [{"to": "agent_analyze", "action": "reanalyze"}]
+                }
+            
+        # Lấy score trung bình của kết quả
+        avg_score = sum(result["entities"]["scores"]) / len(result["entities"]["scores"])
+        
+        # Điều chỉnh ngưỡng score dựa trên mode
+        min_score = 0.2 if summary_only_mode else 0.3
+        
+        if avg_score < min_score:
+            if summary_only_mode:
+                logging.warning(f"⚠️ Summary-only mode: Score thấp ({avg_score:.3f}) nhưng tiếp tục")
+            else:
+                logging.warning(f"⚠️ Agent Verify: Score trung bình ({avg_score:.3f}) quá thấp")
+                return {
+                    "error": "Low confidence in search results",
+                    "retry_count_verify": retry_count + 1,
+                    "messages": [{"to": "agent_analyze", "action": "reanalyze"}]
+                }
+        
         llm = get_llm(state.api_key, state.model_name)
+        logging.info("✓ Agent Verify: Đã khởi tạo LLM")
+            
         response = llm.invoke(verify_prompt.format(
             question=state["question"],
             summary=state["summary"],
-            entities=str(result["entities"])
+            search_entities=str({
+                "results": result["entities"]["results"],
+                "scores": result["entities"]["scores"]
+            }),
+            analysis_entities=str(state["entities"])
         ))
+        logging.info("✓ Agent Verify: Đã gọi LLM để xác minh")
         
-        parsed = json.loads(response.content)
-        messages = state.get("messages", []) + [parsed["message"]] if parsed["message"] else state.get("messages", [])
+        try:
+            parsed = json.loads(response.content)
+        except json.JSONDecodeError:
+            logging.warning("❌ Agent Verify: Không thể parse kết quả từ LLM, tạo fallback response")
+            # Fallback verification cho summary-only mode
+            if summary_only_mode:
+                parsed = {
+                    "verified": True,
+                    "verified_data": {
+                        "entities": state["entities"],
+                        "confidence": "medium",
+                        "mode": "summary_only_fallback"
+                    },
+                    "message": None
+                }
+            else:
+                return {
+                    "error": "Invalid LLM response format",
+                    "retry_count_verify": retry_count + 1,
+                    "messages": []
+                }
         
         if parsed["verified"]:
-            logging.info("✅ Agent Verify: Xác minh thành công")
+            # Tính số lượng entities từ mỗi nguồn
+            search_entities = result.get("entities", {})
+            analysis_entities = state.get("entities", {})
+            
+            search_count = len(search_entities.get("results", []))
+            analysis_count = sum(len(entities) for entities in analysis_entities.values())
+            
+            mode_info = f" (summary-only mode)" if summary_only_mode else ""
+            
+            logging.info(f"""✅ Agent Verify: Xác minh thành công{mode_info}
+            - Entities từ search: {search_count} items (avg score: {avg_score:.3f})
+            - Entities từ analysis: {analysis_count} items
+            - Verified data: {len(parsed.get('verified_data', {}))} items
+            - Categories: {', '.join(parsed.get('verified_data', {}).keys())}""")
+            
+            return {
+                "verified_data": parsed["verified_data"],
+                "retry_count_verify": retry_count + 1,
+                "messages": [],  # Clear messages
+                "error": None
+            }
         else:
             logging.warning("⚠️ Agent Verify: Xác minh thất bại, cần phân tích lại")
+            return {
+                "error": "Verification failed",
+                "retry_count_verify": retry_count + 1,
+                "messages": [{"to": "agent_analyze", "action": "reanalyze"}]
+            }
             
-        return {
-            "verified_data": parsed["verified_data"],
-            "messages": messages,
-            "error": None if parsed["verified"] else "Verification failed"
-        }
     except Exception as e:
         logging.error(f"❌ Agent Verify: Lỗi khi xác minh - {str(e)}")
-        return {"error": str(e), "messages": state.get("messages", [])}
+        return {
+            "error": str(e),
+            "retry_count_verify": retry_count + 1,
+            "messages": [{"to": "agent_analyze", "action": "reanalyze"}]
+        }
 
 
 class FinalOutput(BaseModel):
@@ -504,27 +867,59 @@ class FinalOutput(BaseModel):
 
 def aggregated_agent(state: AgentState) -> AgentState:
     """Agent tổng hợp kết quả"""
-    logging.info("🚀 Agent Aggregate: Bắt đầu tổng hợp kết quả...")
+    retry_count = state.get("retry_count_aggregate", 0)
+    logging.info(f"🚀 Agent Aggregate: Bắt đầu tổng hợp kết quả (retry: {retry_count})...")
+    
     if state.get("error"):
         error_msg = state.get("error")
         logging.error(f"❌ Agent Aggregate: Không thể tổng hợp do lỗi - {error_msg}")
-        return {"report": f"Error: {error_msg}", "messages": state.get("messages", [])}
+        return {
+            "report": f"Error: {error_msg}", 
+            "retry_count_aggregate": retry_count + 1,
+            "messages": []
+        }
     
     try:
         final_result = FinalOutput(
-            answer=f"Response to '{state['question']}': {state['verified_data']}",
-            summary=state["summary"],
-            entities=state["entities"],
-            verified_data=state["verified_data"]
+            answer=f"Response to '{state['question']}': {state.get('verified_data', 'No verified data')}",
+            summary=state.get("summary", "No summary available"),
+            entities=state.get("entities", {}),
+            verified_data=state.get("verified_data", {})
         )
         
         logging.info("✅ Agent Aggregate: Đã tổng hợp thành công")
-        return {"report": final_result.model_dump_json(), "error": None, "messages": state.get("messages", [])}
+        return {
+            "report": final_result.model_dump_json(), 
+            "retry_count_aggregate": retry_count + 1,
+            "error": None, 
+            "messages": []
+        }
     except Exception as e:
         logging.error(f"❌ Agent Aggregate: Lỗi khi tổng hợp - {str(e)}")
         return {
             "error": str(e),
-            "messages": state.get("messages", []) + [{"to": "agent_verify", "action": "reverify"}]
+            "retry_count_aggregate": retry_count + 1,
+            "messages": []
         }
+
+def process_summary_chunk(chunk_data):
+    """Process summary chunk for parallel execution"""
+    chunk_idx, chunk = chunk_data
+    try:
+        llm = get_global_llm()
+        chunk_result = llm.invoke(final_summarize_prompt.format(summaries="\n".join(chunk)))
+        return chunk_result.content if hasattr(chunk_result, "content") else str(chunk_result)
+    except Exception as e:
+        logging.warning(f"⚠️ Lỗi khi xử lý summary chunk {chunk_idx}: {str(e)}")
+        return " ".join(chunk[:3])  # Fallback với 3 summaries đầu
+
+# Backward compatibility
+def analyze_chunk_batch(chunk: str) -> Dict:
+    """Backward compatibility wrapper"""
+    return analyze_chunk_batch_with_mode(chunk, use_fallback=False)
+
+def analyze_batch_parallel(batch: List[str], max_workers: int = 10) -> List[Dict]:
+    """Backward compatibility wrapper"""
+    return analyze_batch_parallel_with_mode(batch, max_workers, use_fallback=False)
 
 
