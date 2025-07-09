@@ -17,7 +17,17 @@ def build_graph():
     workflow.add_node("agent_analyze", analyzed_agent)
     workflow.add_node("agent_verify", verified_agent)
     workflow.add_node("agent_aggregate", aggregated_agent)
-    workflow.add_node("error_final", lambda state: {**state, "final_error": True})
+    
+    # Fix error_final node - không dùng dict unpacking với dataclass
+    def error_final_handler(state: AgentState) -> AgentState:
+        """Handler cho error final state"""
+        return {
+            "error": state.error or "Workflow failed after max retries",
+            "report": f"ERROR: {state.error or 'Workflow failed'}",
+            "messages": []
+        }
+    
+    workflow.add_node("error_final", error_final_handler)
 
     # Direct edges
     workflow.add_edge(START, "agent_a1")
