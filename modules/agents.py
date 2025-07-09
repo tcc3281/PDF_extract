@@ -726,6 +726,8 @@ def verified_agent(state: AgentState) -> AgentState:
             "faiss_index": state["db"],
             "query": search_query,
             "chunks": state["chunks"],
+            "api_key": state.api_key,
+            "embedding_model": state.embedding_model,
             "k": 5
         })
         
@@ -736,6 +738,8 @@ def verified_agent(state: AgentState) -> AgentState:
                 "faiss_index": state["db"],
                 "query": state["question"],
                 "chunks": state["chunks"],
+                "api_key": state.api_key,
+                "embedding_model": state.embedding_model,
                 "k": 5
             })
         
