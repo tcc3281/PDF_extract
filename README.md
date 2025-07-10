@@ -194,7 +194,7 @@ Xây dựng luồng xử lý multi-agent sử dụng LangGraph:
 
 ## Demo Streamlit
 
-🔗 **Link Demo**: [https://pdfextract-mjfnyelzbelfj5xjwf7wdd.streamlit.app/](https://pdfextract-mjfnyelzbelfj5xjwf7wdd.streamlit.app/)
+🔗 **Link Demo**: [https://atbmttcod-7gv7obijcmr68vsse3d6u6.streamlit.app/](https://atbmttcod-7gv7obijcmr68vsse3d6u6.streamlit.app/)
 
 ![Streamlit Demo](assets/streamlit.jpeg)
 
