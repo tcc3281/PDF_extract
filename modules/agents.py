@@ -4,7 +4,7 @@ from langchain.prompts import ChatPromptTemplate
 from typing import List, Dict, Any
 import json
 import logging
-from langchain_openai import ChatOpenAI
+from langchain_community.chat_models import ChatLiteLLM
 from dotenv import load_dotenv
 import os
 import time
@@ -22,9 +22,9 @@ logging.basicConfig(
 
 load_dotenv()
 
-def get_llm(api_key: str, model_name: str) -> ChatOpenAI:
+def get_llm(api_key: str, model_name: str) -> ChatLiteLLM:
     """Tạo ChatOpenAI instance"""
-    return ChatOpenAI(
+    return ChatLiteLLM(
         model=model_name,
         temperature=0,
         api_key=api_key
@@ -36,7 +36,7 @@ _global_llm = None
 def set_global_llm(api_key: str, model_name: str):
     """Set global LLM instance"""
     global _global_llm
-    _global_llm = ChatOpenAI(
+    _global_llm = ChatLiteLLM(
         model=model_name,
         temperature=0,
         api_key=api_key
