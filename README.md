@@ -10,8 +10,12 @@ PDF Extract là hệ thống multi-agent được thiết kế để trích xu�
 ### LangChain Ecosystem
 - **langchain**: Framework xây dựng ứng dụng AI
 - **langgraph**: Xây dựng luồng xử lý multi-agent
-- **langchain-openai**: Tích hợp với OpenAI API
+- **langchain-community**: Tích hợp với các model và tools
 - **langchain-text-splitters**: Chia nhỏ văn bản
+
+### LLM Integration
+- **litellm**: Unified interface cho nhiều LLM providers
+- **openai**: OpenAI API client (optional)
 
 ### Vector Database
 - **faiss-cpu**: Vector database để lưu trữ và tìm kiếm embeddings
@@ -141,6 +145,7 @@ PDF_extract/
 - `summary`, `entities`, `verified_data`: Kết quả xử lý
 - Các biến đếm retry cho mỗi agent
 - Cấu hình model (api_key, model_name, embedding_model)
+- Hỗ trợ đa dạng LLM providers thông qua LiteLLM
 
 ### 2. Tools (tools.py)
 Cung cấp các công cụ xử lý:
@@ -159,25 +164,30 @@ Cung cấp các công cụ xử lý:
   - Fallback Strategy
 
 ### 3. Agents (agents.py)
-Định nghĩa các agent xử lý:
+Định nghĩa các agent xử lý với tích hợp LiteLLM:
 - `extracted_agent`: 
   - Trích xuất văn bản từ PDF
   - Xử lý retry tối đa 3 lần
+  - Sử dụng LiteLLM để tương thích nhiều providers
 - `chunked_and_embedded_agent`:
   - Phân đoạn và tạo embeddings
   - Điều chỉnh kích thước chunk tự động
   - Xử lý retry tối đa 3 lần
+  - Hỗ trợ đa dạng embedding models
 - `analyzed_agent`:
   - Phân tích nội dung với prompts tối ưu
   - Xử lý song song với ThreadPoolExecutor
   - Tách thành các batch 20 chunks
+  - Tương thích với các LLM khác nhau qua LiteLLM
 - `verified_agent`:
   - Xác minh kết quả với search_tool
   - Tối ưu query tìm kiếm
   - Xử lý retry và fallback
+  - Linh hoạt chuyển đổi giữa các LLM providers
 - `aggregated_agent`:
   - Tổng hợp kết quả cuối cùng
   - Format output theo FinalOutput schema
+  - Tích hợp seamless với nhiều LLM
 
 ### 4. Điểm nổi bật trong xử lý
 
@@ -202,11 +212,19 @@ Cung cấp các công cụ xử lý:
 - Prompts riêng cho summarize, extract và final_summarize
 - Fallback prompts cho trường hợp đặc biệt
 - Format JSON cho entities extraction
+- Tương thích cross-model qua LiteLLM
 
 5. **Parallel Processing**:
 - ThreadPoolExecutor cho phân tích chunks
 - Xử lý song song với batch size tối ưu
 - Tổng hợp kết quả theo batch
+
+6. **LLM Provider Integration**:
+- Unified interface thông qua LiteLLM
+- Hỗ trợ đa dạng providers: OpenAI, Azure, Anthropic, Claude...
+- Dễ dàng chuyển đổi giữa các providers
+- Xử lý rate limiting và retry tập trung
+- Quản lý API keys linh hoạt
 
 ## Demo Streamlit
 
@@ -216,12 +234,13 @@ Cung cấp các công cụ xử lý:
 
 Giao diện Streamlit cung cấp:
 - Upload file PDF
-- Cấu hình API key và model
+- Cấu hình API key và model (hỗ trợ nhiều providers)
 - Hiển thị kết quả trích xuất theo tabs:
   - Thông tin quan trọng
   - Entities (tên, ngày tháng, địa điểm, số liệu)
   - Raw data
 - Download kết quả dạng JSON
+- Lựa chọn LLM provider
 
 ## Cách sử dụng
 
