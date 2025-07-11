@@ -11,6 +11,10 @@ langchain-text-splitters>=0.3.8,<0.4.0
 langsmith>=0.4.1,<0.5.0
 langgraph>=0.2.28,<0.3.0
 langgraph-checkpoint>=1.0.12,<2.0.0
+langchain-community >=0.3.27
+
+# Litellm
+litellm>=1.74.1
 
 # OpenAI
 openai>=1.91.0,<2.0.0

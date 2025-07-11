@@ -16,10 +16,21 @@ def run_extraction(file_path: str, question: str = "Trích xuất các nội dun
     Returns:
         dict: Kết quả xử lý
     """
-    # Khởi tạo state
+    # Lấy API configs từ env
+    api_key = os.getenv("OPENAI_API_KEY")
+    model_name = os.getenv("MODEL_NAME", "gpt-4o-mini")
+    embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
+    
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY environment variable is required")
+    
+    # Khởi tạo state với API configs
     initial_state = AgentState(
         file_path=file_path,
         question=question,
+        api_key=api_key,
+        model_name=model_name,
+        embedding_model=embedding_model,
         cleaned_text=None,
         chunks=[],
         embeddings=[],
@@ -32,12 +43,14 @@ def run_extraction(file_path: str, question: str = "Trích xuất các nội dun
         messages=[],
         retry_count_a1=0,
         retry_count_a2=0,
-        retry_count_analyze=0
+        retry_count_analyze=0,
+        retry_count_verify=0,
+        retry_count_aggregate=0
     )
     
-    # Xây dựng và chạy graph
+    # Xây dựng và chạy graph với recursion limit
     graph = build_graph()
-    result = graph.invoke(initial_state)
+    result = graph.invoke(initial_state, {"recursion_limit": 50})
     
     return result
 
